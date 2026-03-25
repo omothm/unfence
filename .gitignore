@@ -1,0 +1,17 @@
+# User-specific rule files — not tracked
+rules/*
+!rules/.gitkeep
+
+# Runtime logs
+logs/*
+!logs/.gitkeep
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Runtime cache (TUI state, recommendations, shadow analysis)
+.claude/cache/
+
+# Local-machine-specific Claude settings (may contain absolute paths)
+.claude/settings.local.json

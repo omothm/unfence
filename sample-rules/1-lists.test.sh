@@ -1,0 +1,8 @@
+run_test "git status (allow)"                    "git status"                 "allow"
+run_test "git log --oneline (allow)"             "git log --oneline"          "allow"
+run_test "gh pr list (allow)"                    "gh pr list"                 "allow"
+run_test "git push (ask → defer)"                "git push origin main"       "defer"
+run_test "git push --force (deny beats ask)"     "git push origin --force"    "deny"
+run_test "git push -f (deny)"                    "git push -f"                "deny"
+run_test "rm -rf (deny)"                         "rm -rf /tmp/foo"            "deny"
+run_test "unknown command (defer)"               "make build"                 "defer"
