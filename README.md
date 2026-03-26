@@ -80,6 +80,15 @@ For tools where prefix matching isn't precise enough. Parses the actual flags to
 **`2-rm-checker.sh` — semantic rm checker**
 Extends the checker pattern to destructive operations. Denies any `rm` invocation that combines a recursive flag (`-r`, `-R`, `--recursive`) with a force flag (`-f`, `--force`), regardless of order, casing, or whether they appear combined (`-rf`) or split (`-r -f`). Prefix matching in `1-lists.sh` would only catch the exact string `rm -rf`; this checker catches all variants.
 
+**Cross-cutting flag rule (e.g. `2-check-info-flags.sh`)**
+Some rules apply across all commands based purely on flags, not the command name. Any invocation with `--help` or `--version` is safe regardless of what command it is — a single 5-line rule auto-approves all informational queries across every CLI tool you'll ever use. Write one such rule and it applies everywhere for free.
+
+**Naming-convention matching (e.g. `2-check-aws.sh`)**
+When a tool's CLI follows a consistent naming convention, match the pattern instead of enumerating every subcommand. AWS read-only operations are all prefixed `describe-*`, `list-*`, `get-*` — a single `case` match covers hundreds of subcommands. More robust than maintaining an exhaustive list, and automatically correct for new subcommands as the tool evolves.
+
+**Environment-aware / project-config rules (e.g. `1-check-sf.sh`)**
+Rules can read environment variables and external JSON config, not just the command string. If a file named `.claude/unfence.json` exists in the project root, the engine loads it and exports its contents as `$PROJECT_CONFIG`. Rules can then use `jq` to extract project-specific values and make context-sensitive decisions — for example, allowing a `sf deploy` command only when `--target-org` matches an org listed in `.salesforce.safe-orgs`. This is the pattern to reach for when "always allow" is too coarse but "always ask" is too noisy.
+
 **Filename prefix conventions:**
 - `0-*` — Unwrappers / preprocessors (run first)
 - `1-*` — List-based matching
