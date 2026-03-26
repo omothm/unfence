@@ -1,8 +1,10 @@
 # unfence
 
+Increase Claude's autonomy without losing control.
+
 Claude Code's built-in permission system errs far on the side of caution: it prompts you to approve commands that are obviously safe — `git status`, `curl -s`, `jq` — breaking your agent's flow dozens of times per session. The only escape valve it offers is a coarse allow-list in `settings.json`, with no logic, no conditions, and no way to say "allow this, but not that variant."
 
-This project replaces that with a **rule-file engine**: small shell scripts that encode exactly which commands are safe, which are dangerous, and which warrant a prompt. Rules are precise (flag-aware, specificity-ranked, composable), tested, and git-tracked. An agent writes and maintains them automatically as you work — you stay in control without being interrupted.
+This project replaces that with a **rule-file engine**: small shell scripts that encode exactly which commands are safe, which are dangerous, and which warrant a prompt. Rules are precise (flag-aware, specificity-ranked, composable), tested, and git-tracked. An agent writes and maintains them automatically as you work — you stay in control without being interrupted. It is the [PreToolUse hook](https://code.claude.com/docs/en/permissions#:~:text=Use%20PreToolUse%20hooks) that Claude's own docs recommend for reliable command filtering.
 
 ## How it works
 
