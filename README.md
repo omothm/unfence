@@ -69,18 +69,21 @@ The runner sources every `*.test.sh` in `rules/` and reports pass/fail. Always r
 Rules are normally written by agents (see [Recommended workflow](#recommended-workflow)), but understanding the patterns helps when you want to review or manually tune them. `sample-rules/` contains three annotated templates covering the main patterns:
 
 **`0-unwrap.sh` — `recurse:` (preprocessing layer)**
-Strips a wrapper command (e.g. `xargs`) and re-runs the full pipeline on the inner command. This means every other rule you write automatically extends to `xargs` invocations too, for free. The `recurse:` return value is unique to this engine.
+Strips a wrapper command and re-runs the full pipeline on the inner command. Handles `xargs`, `eval`, and `bash`/`sh`/`zsh -c` out of the box. This means every other rule you write automatically extends to those wrapper forms for free. The `recurse:` return value is unique to this engine.
 
 **`1-lists.sh` — specificity-based ALLOW / DENY / ASK lists**
 The main workhorse. Define three arrays of command prefixes. The most-specific match wins, with `deny > ask > allow` on ties. This lets you block `git push --force` while still allowing `git push` — a more-specific rule always beats a less-specific one. Flags like `--force` can appear anywhere in the command and still be matched.
 
-**`2-checker.sh` — flag-inspection checker**
+**`2-checker.sh` — flag-inspection checker (curl)**
 For tools where prefix matching isn't precise enough. Parses the actual flags to distinguish safe from unsafe operations — here, curl GET/HEAD requests are allowed while anything with `-d`, `-F`, `-X POST`, etc. is deferred. Apply this pattern to any tool with a mix of read-only and mutating subcommands.
+
+**`2-rm-checker.sh` — semantic rm checker**
+Extends the checker pattern to destructive operations. Denies any `rm` invocation that combines a recursive flag (`-r`, `-R`, `--recursive`) with a force flag (`-f`, `--force`), regardless of order, casing, or whether they appear combined (`-rf`) or split (`-r -f`). Prefix matching in `1-lists.sh` would only catch the exact string `rm -rf`; this checker catches all variants.
 
 **Filename prefix conventions:**
 - `0-*` — Unwrappers / preprocessors (run first)
 - `1-*` — List-based matching
-- `2-*` — Command-specific checkers (run last)
+- `2-*` — Command-specific checkers (run last; multiple checkers sort alphabetically)
 
 Every rule file must have a `*.test.sh` counterpart with at least one positive (`allow`) and one negative (`defer`) test.
 
