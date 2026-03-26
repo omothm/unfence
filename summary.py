@@ -1737,6 +1737,13 @@ class TUI:
             if not is_last:
                 body.append(DIV)
 
+        body.append(BOT)
+
+        tip_text = "Tip: run claude in ~/.claude/unfence/ to add complex rules or modify existing ones"
+        tip_width = max(1, inner - 3)
+        for line in word_wrap(tip_text, tip_width):
+            body.append(ContentLine([(A_DIM, "  " + line)], bordered=False))
+
         return body
 
     def _get_body(self, inner: int, cursor: int = -1):
@@ -1885,7 +1892,10 @@ class TUI:
         ctrl_sep  = rows - ctrl_rows
         pane_open = self.eval_open or self.shadow_open or self.rec_open
         ctrl_battr = CP8 if pane_open else None
-        self._draw_item(ctrl_sep, HLine(curses.ACS_LLCORNER, curses.ACS_LRCORNER),
+        box_open = pane_open or self.detail_open
+        sep_lch = curses.ACS_LLCORNER if box_open else curses.ACS_HLINE
+        sep_rch = curses.ACS_LRCORNER if box_open else curses.ACS_HLINE
+        self._draw_item(ctrl_sep, HLine(sep_lch, sep_rch),
                         cols, inner, border_attr=ctrl_battr)
 
         if self.detail_open:
@@ -1927,7 +1937,6 @@ class TUI:
         elif self.eval_open:
             for i, line_segs in enumerate(self._eval_ctrl_lines(cols)):
                 self._draw_item(ctrl_sep + 1 + i, ContentLine(line_segs, bordered=False), cols, inner)
-            self._hide_cursor()
             return
 
         elif self.rec_open:
@@ -2105,7 +2114,8 @@ class TUI:
         div_row  = HR - 1
         self._draw_scroll_indicators(div_row, cols, self.scroll > 0, self.scroll < max_scroll)
 
-        for i, item in enumerate(body[self.scroll : self.scroll + body_rows]):
+        visible_body = body[self.scroll : self.scroll + body_rows]
+        for i, item in enumerate(visible_body):
             self._draw_item(HR + i, item, cols, inner)
 
         if shadow_rows:
