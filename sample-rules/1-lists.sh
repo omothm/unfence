@@ -12,7 +12,6 @@
 DENY=(
   "git push --force"   # irreversible; --force can appear anywhere in the command
   "git push -f"
-  "rm -rf"             # recursive forced delete
   "chmod 777"
 )
 
@@ -25,6 +24,8 @@ ASK=(
 )
 
 ALLOW=(
+  "echo"
+  "ls"
   "git status"
   "git diff"
   "git log"
@@ -54,7 +55,9 @@ matches_rule() {
   for t in "${cmd[@]}"; do
     [[ $pi -ge ${#pos[@]} ]] && break
     [[ "$t" == -* ]] && continue
-    [[ "$t" == "${pos[$pi]}" ]] && (( pi++ )) || return 1
+    if [[ "$t" == "${pos[$pi]}" ]]; then (( pi++ )) || true
+    else return 1
+    fi
   done
   [[ $pi -lt ${#pos[@]} ]] && return 1
 
