@@ -520,6 +520,124 @@ def word_wrap(text: str, width: int):
         yield current
 
 
+# ── Deferlog syntax highlighting ──────────────────────────────────────────────
+# Self-contained; used only in _draw_deferlog_view.
+# To remove: delete this block and revert the sections marked [SH] below.
+
+_SH_PATTERNS = [
+    # name          regex                                   colour key
+    ("comment",     re.compile(r'(#.*)'),                              "dim"),
+    ("string_dq",   re.compile(r'("(?:[^"\\]|\\.)*")'),               "yellow"),
+    ("string_sq",   re.compile(r"('(?:[^'\\]|\\.)*')"),               "yellow"),
+    ("variable",    re.compile(r'(\$\{[^}]+\}|\$[A-Za-z_]\w*)'),      "green"),
+    ("operator",    re.compile(r'(&&|\|\||[|;&]|>>?|<(?:<|&\d+)?)'),  "cyan"),
+    ("flag",        re.compile(r'((?<!\w)--?[A-Za-z][\w-]*)'),        "dim"),
+]
+_SH_COMBINED = re.compile(
+    "|".join(f"(?P<{name}>{pat.pattern})" for name, pat, _ in _SH_PATTERNS)
+)
+_SH_COLOUR = {name: col for name, _, col in _SH_PATTERNS}
+
+def _sh_attr(key: str):
+    if key == "yellow":  return curses.color_pair(1)
+    if key == "green":   return curses.color_pair(6)
+    if key == "cyan":    return curses.color_pair(4)
+    if key == "dim":     return curses.A_DIM
+    return curses.A_NORMAL
+
+def highlight_shell(line: str) -> list:
+    """
+    Tokenise a full logical shell line into [(attr, text), …].
+    The first plain word is bolded as the command name.
+    Falls back to [(A_NORMAL, line)] on any error.
+    """
+    try:
+        segs = []
+        first_word_done = False
+        pos = 0
+        for m in _SH_COMBINED.finditer(line):
+            if m.start() > pos:
+                plain = line[pos:m.start()]
+                if not first_word_done and plain.split():
+                    word = plain.split()[0]
+                    idx  = plain.index(word)
+                    if idx:
+                        segs.append((curses.A_NORMAL, plain[:idx]))
+                    segs.append((curses.A_BOLD, word))
+                    rest = plain[idx + len(word):]
+                    if rest:
+                        segs.append((curses.A_NORMAL, rest))
+                    first_word_done = True
+                else:
+                    segs.append((curses.A_NORMAL, plain))
+            segs.append((_sh_attr(_SH_COLOUR[m.lastgroup]), m.group()))
+            first_word_done = True
+            pos = m.end()
+        if pos < len(line):
+            tail = line[pos:]
+            if not first_word_done and tail.split():
+                word = tail.split()[0]
+                idx  = tail.index(word)
+                if idx:
+                    segs.append((curses.A_NORMAL, tail[:idx]))
+                segs.append((curses.A_BOLD, word))
+                rest = tail[idx + len(word):]
+                if rest:
+                    segs.append((curses.A_NORMAL, rest))
+            else:
+                segs.append((curses.A_NORMAL, tail))
+        return segs if segs else [(curses.A_NORMAL, line)]
+    except Exception:
+        return [(curses.A_NORMAL, line)]
+
+def wrap_token_line(segs: list, width: int) -> list:
+    """
+    Wrap [(attr, text), …] to *width* chars, returning a list of display lines.
+    Splits only at spaces within A_NORMAL segments; all other tokens are atomic.
+    Falls back to [segs] on any error.
+    """
+    try:
+        # Build words: each is a list of (attr, text), separated by space runs
+        words, pending = [], []
+        for attr, text in segs:
+            if attr == curses.A_NORMAL:
+                for part in re.split(r'( +)', text):
+                    if not part:
+                        continue
+                    if ' ' in part:          # space run — flush current word
+                        if pending:
+                            words.append(pending)
+                            pending = []
+                    else:
+                        pending.append((attr, part))
+            else:
+                pending.append((attr, text))  # atomic token — never split
+        if pending:
+            words.append(pending)
+        if not words:
+            return [[]]
+        # Greedy line-fill
+        lines, cur, cur_len = [], [], 0
+        for word in words:
+            wlen = sum(len(t) for _, t in word)
+            if not cur:
+                cur, cur_len = list(word), wlen
+            elif cur_len + 1 + wlen <= width:
+                cur.append((curses.A_NORMAL, ' '))
+                cur.extend(word)
+                cur_len += 1 + wlen
+            else:
+                lines.append(cur)
+                cur, cur_len = list(word), wlen
+        if cur:
+            lines.append(cur)
+        return lines if lines else [[]]
+    except Exception:
+        return [segs]
+
+# ── End deferlog syntax highlighting ──────────────────────────────────────────
+
+
 def delete_rule(rule: Path):
     """Delete a rule file, its companion test file, and its cache entry."""
     test = rule.parent / rule.name.replace(".sh", ".test.sh")
@@ -2269,15 +2387,15 @@ class TUI:
         if body_rows <= 0:
             return
 
-        # ── Command body (word-wrap each logical line, then scroll) ────────────
+        # ── Command body (tokenize → wrap → scroll) ────────────────────────  [SH]
         cmd_width = max(1, inner - 4)   # 2 spaces indent each side
-        body_lines: list[str] = []
+        body_lines: list = []           # list of list[(attr, text)]         [SH]
         for logical in cmd.split("\n"):
             if not logical.strip():
-                body_lines.append("")
+                body_lines.append([])                                       # [SH]
                 continue
-            wrapped = list(word_wrap(logical, cmd_width))
-            body_lines.extend(wrapped if wrapped else [""])
+            wrapped = wrap_token_line(highlight_shell(logical), cmd_width)  # [SH]
+            body_lines.extend(wrapped if wrapped else [[]])
 
         max_scroll        = max(0, len(body_lines) - body_rows)
         self.deferlog_scroll = max(0, min(self.deferlog_scroll, max_scroll))
@@ -2289,7 +2407,7 @@ class TUI:
         visible = body_lines[scroll: scroll + body_rows]
         for i in range(body_rows):
             line = visible[i] if i < len(visible) else None
-            item = ContentLine([(A_NORMAL, f"  {line}")]) if line is not None else EMPTY
+            item = ContentLine([(A_NORMAL, "  ")] + line) if line is not None else EMPTY  # [SH]
             self._draw_item(body_top + i, item, cols, inner)
 
         # ── Controls ───────────────────────────────────────────────────────────
