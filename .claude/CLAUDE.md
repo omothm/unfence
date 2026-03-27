@@ -59,6 +59,7 @@ Where `expected_verdict` is one of: `allow`, `deny`, `defer` (note: `ask` rules 
   ```bash
   bash ~/.claude/unfence/run-tests.sh
   ```
+- **After any change to sample-rules/, also run the sample test suite** by temporarily changing `RULES_DIR` in `run-tests.sh` and `RULES_DIR` in `hooks/unfence.sh` to point to `sample-rules/`, running `bash run-tests.sh`, then reverting both lines.
 - **Never proceed with further work if tests are failing.** Fix the issue first.
 
 ## Diagnosing Why a Command Isn't Auto-Accepted

@@ -66,7 +66,7 @@ The runner sources every `*.test.sh` in `rules/` and reports pass/fail. Always r
 
 ## Writing rules
 
-Rules are normally written by agents (see [Recommended workflow](#recommended-workflow)), but understanding the patterns helps when you want to review or manually tune them. `sample-rules/` contains three annotated templates covering the main patterns:
+Rules are normally written by agents (see [Recommended workflow](#recommended-workflow)), but understanding the patterns helps when you want to review or manually tune them. `sample-rules/` contains annotated templates covering the main patterns:
 
 **`0-unwrap.sh` — `recurse:` (preprocessing layer)**
 Strips a wrapper command and re-runs the full pipeline on the inner command. Handles `xargs`, `eval`, and `bash`/`sh`/`zsh -c` out of the box. This means every other rule you write automatically extends to those wrapper forms for free. The `recurse:` return value is unique to this engine.
