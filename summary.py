@@ -635,6 +635,27 @@ def wrap_token_line(segs: list, width: int) -> list:
     except Exception:
         return [segs]
 
+def scan_heredoc_body_lines(cmd: str) -> set:
+    """
+    Return set of line indices (0-based) that are heredoc body lines.
+    Handles <<DELIM, <<'DELIM', <<"DELIM", <<-DELIM.
+    Stacked heredocs (multiple << on one line) are processed FIFO.
+    """
+    lines   = cmd.split("\n")
+    body    = set()
+    pending = []   # queue of raw delimiter strings
+    for i, line in enumerate(lines):
+        if pending:
+            if line.strip() == pending[0]:
+                pending.pop(0)
+            else:
+                body.add(i)
+        # Always scan for new << markers (handles stacked heredocs)
+        if not (pending and line.strip() == pending[0]):  # skip if just closed
+            for m in re.finditer(r'<<-?\s*["\']?(\w+)["\']?', line):
+                pending.append(m.group(1))
+    return body
+
 # ── End deferlog syntax highlighting ──────────────────────────────────────────
 
 
@@ -2388,13 +2409,23 @@ class TUI:
             return
 
         # ── Command body (tokenize → wrap → scroll) ────────────────────────  [SH]
-        cmd_width = max(1, inner - 4)   # 2 spaces indent each side
-        body_lines: list = []           # list of list[(attr, text)]         [SH]
-        for logical in cmd.split("\n"):
+        cmd_width      = max(1, inner - 4)   # 2 spaces indent each side
+        body_lines: list = []                # list of list[(attr, text)]   [SH]
+        heredoc_bodies = scan_heredoc_body_lines(cmd)                       # [SH]
+        for line_idx, logical in enumerate(cmd.split("\n")):                # [SH]
             if not logical.strip():
-                body_lines.append([])                                       # [SH]
+                body_lines.append([])
                 continue
-            wrapped = wrap_token_line(highlight_shell(logical), cmd_width)  # [SH]
+            if line_idx in heredoc_bodies:                                  # [SH]
+                # Heredoc body line — render as yellow string content       [SH]
+                segs = []                                                   # [SH]
+                for w in logical.split():                                   # [SH]
+                    if segs: segs.append((curses.A_NORMAL, ' '))            # [SH]
+                    segs.append((_sh_attr("yellow"), w))                    # [SH]
+                wrapped = wrap_token_line(                                  # [SH]
+                    segs or [(curses.A_NORMAL, logical)], cmd_width)        # [SH]
+            else:
+                wrapped = wrap_token_line(highlight_shell(logical), cmd_width)
             body_lines.extend(wrapped if wrapped else [[]])
 
         max_scroll        = max(0, len(body_lines) - body_rows)
