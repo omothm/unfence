@@ -22,11 +22,6 @@ MAX_RECURSE=10
 # Exported so rule subshells can read project-specific config.
 PROJECT_CONFIG=""
 
-# ── "Transparent" flag-pairs stripped before rule matching ────────────────────
-# These are flags that take a value and are semantically irrelevant to the
-# command being classified (e.g. git -C /path log → just classify git log).
-TRANSPARENT_FLAGS=(-C --prefix -p)
-
 log() {
   [[ -n "${NO_LOG:-}" ]] && return 0
   printf '[%s] [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$SESSION_ID" "$*" \
@@ -192,20 +187,6 @@ classify_single() {
   elif [[ "${TOKENS[0]}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
     echo "allow"; return   # simple VAR=value → allow
   fi
-  [[ ${#TOKENS[@]} -eq 0 ]] && echo "allow" && return
-
-  # Strip transparent flag-pairs
-  local stripped=() skip_next=false
-  for tok in "${TOKENS[@]}"; do
-    if $skip_next; then skip_next=false; continue; fi
-    local is_tf=false
-    for tf in "${TRANSPARENT_FLAGS[@]}"; do
-      if [[ "$tok" == "$tf" ]];    then is_tf=true; skip_next=true; break; fi
-      if [[ "$tok" == "$tf="* ]];  then is_tf=true; break; fi
-    done
-    $is_tf || stripped+=("$tok")
-  done
-  TOKENS=("${stripped[@]}")
   [[ ${#TOKENS[@]} -eq 0 ]] && echo "allow" && return
 
   local normalized="${TOKENS[*]}"
