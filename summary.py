@@ -1632,6 +1632,9 @@ class TUI:
                                 bordered=False)
 
         st = self.log_stats
+        total = st['allow'] + st['deny'] + st['defer']
+        non_prompted = st['allow'] + st['deny']
+        autonomy_str = f"  {100 * non_prompted / total:.1f}% autonomous" if total else ""
         stats_row = ContentLine([
             (A_DIM,          " 30d: "),
             (CP6 | A_BOLD,   f"{st['allow']:,}"),
@@ -1640,6 +1643,7 @@ class TUI:
             (A_DIM,          " denied   "),
             (CP4,            f"{st['defer']:,}"),
             (A_DIM,          " prompted"),
+            (A_DIM,          autonomy_str),
         ], bordered=False)
 
         return [
@@ -1896,7 +1900,7 @@ class TUI:
         sep_lch = curses.ACS_LLCORNER if box_open else curses.ACS_HLINE
         sep_rch = curses.ACS_LRCORNER if box_open else curses.ACS_HLINE
         self._draw_item(ctrl_sep, HLine(sep_lch, sep_rch),
-                        cols, inner, border_attr=ctrl_battr)
+                        cols, inner, border_attr=ctrl_battr if ctrl_battr is not None else curses.A_DIM)
 
         if self.detail_open:
             with self._lock:
