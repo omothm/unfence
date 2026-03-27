@@ -49,6 +49,7 @@ split_commands() {
   local in_single=false in_double=false
   local current="" heredoc_delim=""
   local double_bracket_depth=0
+  local paren_depth=0
 
   while (( i < len )); do
     local ch="${cmd:$i:1}"
@@ -118,7 +119,15 @@ split_commands() {
         (( double_bracket_depth > 0 )) && (( double_bracket_depth-- ))
         current+="]]"; (( i += 2 )); continue
       fi
-      if (( double_bracket_depth == 0 )); then
+      if [[ "$ch" == "(" ]]; then
+        (( paren_depth++ ))
+        current+="$ch"; (( i++ )); continue
+      fi
+      if [[ "$ch" == ")" ]]; then
+        (( paren_depth > 0 )) && (( paren_depth-- ))
+        current+="$ch"; (( i++ )); continue
+      fi
+      if (( double_bracket_depth == 0 && paren_depth == 0 )); then
         if [[ "${cmd:$i:2}" == "||" ]]; then printf '%s\0' "$current"; current=""; (( i += 2 )); continue; fi
         if [[ "${cmd:$i:2}" == "&&" ]]; then printf '%s\0' "$current"; current=""; (( i += 2 )); continue; fi
         if [[ "$ch" == ";" ]];       then printf '%s\0' "$current"; current=""; (( i++ ));    continue; fi
