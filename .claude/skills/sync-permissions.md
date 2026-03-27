@@ -78,6 +78,22 @@ bash ~/.claude/unfence/run-tests.sh
 - If all tests pass → proceed to cleanup.
 - If any test fails → diagnose, fix the rule/test, re-run. Do not clean up until green.
 
+### 5b. Log each change
+
+For each rule file you created or modified (not for skipped/already-covered entries), log the change:
+
+```bash
+python3 ~/.claude/unfence/summary.py --log SYNC <rule_filename.sh> "One sentence: what was added or changed"
+```
+
+Example:
+```bash
+python3 ~/.claude/unfence/summary.py --log SYNC 1-lists.sh "Added curl https://example.com to ALLOW list"
+python3 ~/.claude/unfence/summary.py --log SYNC 2-check-gh-api.sh "Created rule: allow gh api GET requests"
+```
+
+Run this for each rule touched, after tests pass.
+
 ### 6. Clean up settings.local.json
 
 #### 6a. Remove Bash entries

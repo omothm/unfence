@@ -12,7 +12,9 @@ For each recommendation:
 3. For command families that already have a dedicated checker (e.g. `2-check-aws.sh`), add to the appropriate file
 4. Add a corresponding test to the matching `*.test.sh` file
 5. Run the full test suite: `bash ~/.claude/unfence/run-tests.sh`
-6. Only if all tests pass, remove the implemented recommendation from `.claude/cache/.accepted-recs.json`
+6. Only if all tests pass:
+   - Remove the implemented recommendation from `.claude/cache/.accepted-recs.json`
+   - Log the change: `python3 ~/.claude/unfence/summary.py --log REC <rule_filename.sh> "Implemented recommendation: <pattern>"`
 7. If tests fail, revert your changes and leave the recommendation in the file
 
 Be conservative: if unsure about placement, prefer `1-lists.sh` ALLOW array with an entry that is as specific as possible (prefer "cmd subcommand" over just "cmd").
