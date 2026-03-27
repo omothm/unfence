@@ -61,6 +61,15 @@ Where `expected_verdict` is one of: `allow`, `deny`, `defer` (note: `ask` rules 
   ```
 - **Never proceed with further work if tests are failing.** Fix the issue first.
 
+## Diagnosing Why a Command Isn't Auto-Accepted
+
+**Always read the rule files before diagnosing.** Do not assume a command or keyword is unhandled — check the actual rule files first. A confident diagnosis based on assumption (e.g. "no rule handles `for`") that contradicts the code wastes time and erodes trust.
+
+Diagnostic checklist:
+1. Split the command mentally (or via the engine) on `;`, `|`, `&&`, `||`, newlines.
+2. For each part, trace through each rule file in order and check whether it matches.
+3. Only conclude a part is unhandled after verifying it against all rule files.
+
 ## Modifying Rules
 
 ## Rule File Agnosticism
