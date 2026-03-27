@@ -16,6 +16,7 @@ CACHE_DIR       = PROJECT_DIR / ".claude" / "cache"
 SHADOW_CACHE    = CACHE_DIR / ".shadowing.json"
 LOG_STATS_CACHE = CACHE_DIR / ".log-stats.json"
 LOG_FILE        = PROJECT_DIR / "logs" / "unfence.log"
+CHANGE_LOG      = PROJECT_DIR / "logs" / "changes.log"
 REC_CACHE       = CACHE_DIR / ".recs.json"
 ACCEPTED_REC    = CACHE_DIR / ".accepted-recs.json"
 SKILL_FILE      = PROJECT_DIR / ".claude" / "skills" / "implement-recommendations.md"
@@ -104,6 +105,43 @@ def _log_cache_key():
         return st.st_mtime, st.st_size
     except Exception:
         return 0, 0
+
+
+def append_change_log(source: str, rule: str, msg: str):
+    """Append a change entry to the rule change log (JSON-lines)."""
+    import datetime
+    entry = {
+        "ts":     datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+        "source": source,
+        "rule":   rule,
+        "msg":    msg,
+    }
+    try:
+        CHANGE_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with CHANGE_LOG.open("a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        pass
+
+
+def load_change_log(rule_name=None) -> list:
+    """Load change log entries, optionally filtered by rule name.
+    Returns list of dicts, newest first."""
+    entries = []
+    try:
+        for line in CHANGE_LOG.read_text().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+                if rule_name is None or entry.get("rule") == rule_name:
+                    entries.append(entry)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return list(reversed(entries))
 
 
 def _ts_of(line: str):
@@ -561,7 +599,7 @@ def analyze_shadows(rules, on_proc=None):
 ENGINE = PROJECT_DIR / "hooks" / "unfence.sh"
 
 def evaluate_command(cmd: str):
-    """Run cmd through the full engine pipeline. Returns (verdict, rule_name | None)."""
+    """Run cmd through the full engine pipeline. Returns (verdict, rule_name | None, deferred_parts)."""
     env = {**os.environ, "EVAL_MODE": "1", "CMD": cmd}
     try:
         r = subprocess.run(
@@ -569,9 +607,9 @@ def evaluate_command(cmd: str):
             capture_output=True, text=True, timeout=15,
         )
         data = json.loads(r.stdout.strip())
-        return data.get("verdict", "defer"), data.get("rule") or None
+        return data.get("verdict", "defer"), data.get("rule") or None, data.get("parts") or []
     except Exception:
-        return "defer", None
+        return "defer", None, []
 
 
 # ── Layout objects ────────────────────────────────────────────────────────────
@@ -649,6 +687,7 @@ class TUI:
         self.highlighted  = None
         self.hi_verdict   = None
         self._in_paste    = False
+        self._pending_ev  = None   # replayed on next loop iteration
 
         # Recommendations state
         self.recs             = []     # list of rec dicts (pending)
@@ -662,6 +701,10 @@ class TUI:
         self.rec_processing = False
         self._rec_proc      = None   # Popen handle for running skill
         self._rec_gen       = 0
+
+        # Change log view state
+        self.log_open   = False
+        self.log_scroll = 0
 
         # Rule detail pane state
         self.detail_open            = False
@@ -944,6 +987,8 @@ class TUI:
             with self._lock:
                 self.recs = recs
             save_rec_cache(recs, dismissed, last_ts)
+            for pat in accepted:
+                append_change_log("REC", "", f"Implemented recommendation: {pat}")
 
         if not self._spawn_claude_task(
             log_path, prompt,
@@ -1013,7 +1058,7 @@ class TUI:
         )
         return ["[r] reload", "[ctrl+r] hard reload", "[e] eval",
                 "[↑↓] navigate  [enter/→/1-9] detail",
-                shd_key, rec_key, "[q] quit"]
+                shd_key, rec_key, "[c] changelog", "[q] quit"]
 
     def _wrap_ctrl_tokens(self, tokens: list[str], inner: int) -> list[str]:
         """Greedily pack tokens into lines that fit within inner width (2-char indent)."""
@@ -1079,9 +1124,25 @@ class TUI:
         hint_segs  = [(A_DIM, allow_hint + "[enter] edit  ·  [n] new  ·  [esc] close")]
         prefix_len = sum(len(t) for _, t in verdict_segs)
         hint_len   = sum(len(t) for _, t in hint_segs)
-        if prefix_len + hint_len > cols:
-            return [verdict_segs, hint_segs]
-        return [verdict_segs + hint_segs]
+        lines = [verdict_segs + hint_segs] if prefix_len + hint_len <= cols else [verdict_segs, hint_segs]
+        if verdict == "defer":
+            deferred = res.get("deferred_parts") or []
+            if deferred:
+                MAX_PART = 50
+                SEP = "  ·  "
+                prefix  = "   unmatched: "
+                indent  = " " * len(prefix)
+                formatted = [p[:MAX_PART] + "…" if len(p) > MAX_PART else p for p in deferred]
+                current = prefix
+                for i, part in enumerate(formatted):
+                    chunk = (SEP if i > 0 else "") + part
+                    if i > 0 and len(current) + len(chunk) > cols:
+                        lines.append([(A_DIM, current)])
+                        current = indent + part
+                    else:
+                        current += chunk
+                lines.append([(A_DIM, current)])
+        return lines
 
     def _ctrl_rows(self, inner: int) -> int:
         """Number of rows for the bottom controls strip in the current context."""
@@ -1099,7 +1160,7 @@ class TUI:
             return 1 + len(self._wrap_ctrl_tokens(self._detail_ctrl_tokens(), inner))
         if self.eval_open:
             return 1 + len(self._eval_ctrl_lines(inner + 2))  # +2: unbordered uses full cols
-        if self.shadow_open or self.rec_open:
+        if self.shadow_open or self.rec_open or self.log_open:
             return self.CTRL_ROWS  # 2: sep + 1 content line
         return 1 + len(self._wrap_ctrl_tokens(self._main_ctrl_tokens(), inner))
 
@@ -1135,6 +1196,17 @@ class TUI:
                 self.stdscr.move(row, min(col, self.stdscr.getmaxyx()[1] - 2))
             except curses.error:
                 pass
+
+    @staticmethod
+    def _source_attr(source: str) -> int:
+        """Return curses attribute for a change log source badge."""
+        return {
+            "USER": curses.color_pair(6),    # green — user-initiated
+            "SYNC": curses.color_pair(3),    # black on magenta — auto-synced
+            "REC":  curses.color_pair(1),    # yellow — recommendation
+            "EVAL": curses.color_pair(4),    # cyan — eval pane
+            "DEL":  curses.color_pair(2),    # red — deletion
+        }.get(source, curses.A_NORMAL)
 
     def _open_detail(self, idx: int):
         """Open the rule detail view for the given rule index."""
@@ -1285,13 +1357,14 @@ class TUI:
         self.dirty = True
 
         def work():
-            verdict, rule_name = evaluate_command(cmd)
+            verdict, rule_name, deferred_parts = evaluate_command(cmd)
             with self._lock:
                 rules = list(self.rules)
             rule_num = next((i + 1 for i, r in enumerate(rules) if r.name == rule_name), None)
             with self._lock:
                 self.eval_result = {"running": False, "verdict": verdict,
-                                    "rule_name": rule_name, "rule_num": rule_num}
+                                    "rule_name": rule_name, "rule_num": rule_num,
+                                    "deferred_parts": deferred_parts}
                 self.highlighted = rule_name
                 self.hi_verdict  = verdict
             if rule_num is not None:
@@ -1303,14 +1376,26 @@ class TUI:
     def _add_allow_rule(self, cmd: str):
         """Spawn Claude to identify the deferring sub-command and add an allow rule."""
         engine = PROJECT_DIR / "hooks" / "unfence.sh"
+        with self._lock:
+            deferred_parts = (self.eval_result or {}).get("deferred_parts") or []
+        if deferred_parts:
+            parts_bullet = "\n".join(f"  - {p}" for p in deferred_parts)
+            step1 = (
+                f"The engine already identified these unmatched sub-command(s):\n{parts_bullet}\n\n"
+                "Skip step 1 and proceed directly to step 2.\n"
+            )
+        else:
+            step1 = (
+                f"1. Run the engine in eval mode to identify which sub-command(s) caused the deferral:\n"
+                f"   EVAL_MODE=1 CMD='...' NO_LOG=1 bash {engine}\n"
+                "   (substitute the actual sub-commands to isolate which one defers)\n"
+            )
         prompt = (
             "You are adding an allow rule to the unfence engine.\n\n"
             f"The user evaluated this command and the engine returned 'defer':\n"
             f"  Command: {cmd}\n\n"
+            f"{step1}\n"
             "Steps:\n"
-            f"1. Run the engine in eval mode to identify which sub-command(s) caused the deferral:\n"
-            f"   EVAL_MODE=1 CMD='...' NO_LOG=1 bash {engine}\n"
-            "   (substitute the actual sub-commands to isolate which one defers)\n"
             "2. Determine whether the deferral is caused by:\n"
             "   a) A missing rule — no rule file matches the sub-command\n"
             "   b) An engine issue — the engine's tokenizer/parser incorrectly handles the command\n"
@@ -1334,6 +1419,11 @@ class TUI:
         def on_done():
             self._load_rules()
             self._trigger_stale()
+            r = self.eval_allow_result
+            if r and r.get("success"):
+                rule_name = r.get("rule", "unknown")
+                pattern   = r.get("pattern", cmd[:60])
+                append_change_log("EVAL", rule_name, f"Added allow: {pattern}")
 
         self._spawn_claude_task(
             log_path, prompt,
@@ -1381,6 +1471,8 @@ class TUI:
                 (CACHE_DIR / rules[self.detail_rule_idx].name).unlink(missing_ok=True)
             self._load_rules()
             self._trigger_stale()
+            if self.detail_modify_result == "ok":
+                append_change_log("USER", rule.name, modify_prompt[:120])
 
         self._spawn_claude_task(
             log_path, prompt,
@@ -1418,7 +1510,8 @@ class TUI:
         return len(list(word_wrap(description, max(1, inner - 4)))) + 1
 
     def _pane_overhead(self, description: str | None, inner: int) -> int:
-        """Fixed rows consumed by pane chrome: gap + title + optional desc/divider."""
+        """Fixed rows consumed by pane chrome: gap + title + optional desc + divider.
+        Note: _desc_rows already includes the divider row, so no extra +1 needed."""
         overhead = 2  # gap row + title border row
         if description:
             overhead += self._desc_rows(description, inner)
@@ -1893,6 +1986,30 @@ class TUI:
         else:
             lines.append([(A_DIM, "  (no description — press [x] to generate)")])
 
+        # ── Change log for this rule ──────────────────────────────────────────
+        if not detail_modifying and not summarizing:
+            changes = load_change_log(name)
+            lines.append([])
+            lines.append([(A_DIM | A_BOLD, "  Changes")])
+            if changes:
+                for entry in changes[:30]:
+                    ts       = entry.get("ts", "")
+                    src      = entry.get("source", "?")
+                    msg      = entry.get("msg", "")
+                    time_str = ts[11:16] if len(ts) >= 16 else ts[:10] if ts else "?"
+                    date_str = ts[:10]   if len(ts) >= 10 else "?"
+                    src_attr = self._source_attr(src)
+                    max_msg  = max(1, wrap_w - 25)
+                    if len(msg) > max_msg:
+                        msg = msg[:max_msg - 1] + "…"
+                    lines.append([
+                        (A_DIM,              f"  {date_str} {time_str}  "),
+                        (src_attr | A_BOLD,  f"[{src:<4}]"),
+                        (A_NORMAL,           f"  {msg}"),
+                    ])
+            else:
+                lines.append([(A_DIM, "  No changes recorded.")])
+
         # Scroll clamping
         max_scroll = max(0, len(lines) - content_rows)
         self.detail_scroll = max(0, min(self.detail_scroll, max_scroll))
@@ -1914,6 +2031,103 @@ class TUI:
             row_item = ContentLine(visible[i]) if i < len(visible) else EMPTY
             self._draw_item(content_top + i, row_item, cols, inner)
 
+    # ── Change log view ───────────────────────────────────────────────────────
+
+    def _render_log(self):
+        rows, cols = self.stdscr.getmaxyx()
+        inner      = cols - 2
+        ctrl_rows  = self.CTRL_ROWS
+        self.stdscr.erase()
+        self._draw_log_view(rows, cols, inner, ctrl_rows)
+        self._draw_controls(rows, cols, inner, ctrl_rows)
+        self._hide_cursor()
+        self._apply_cursor()
+        self.stdscr.refresh()
+        self.dirty = False
+
+    def _build_log_display(self, inner: int) -> list:
+        """Build ContentLine items for the change log view (newest first, day-grouped)."""
+        import datetime
+        A_DIM    = curses.A_DIM
+        A_NORMAL = curses.A_NORMAL
+        A_BOLD   = curses.A_BOLD
+
+        entries = load_change_log()
+        if not entries:
+            return [ContentLine([(A_DIM, "  No changes recorded yet.")])]
+
+        today     = datetime.date.today().isoformat()
+        yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+        last_date = None
+        # Reserve space for:  "  HH:MM  [SRC ]  rule-name                msg"
+        #                       2+5+2+7+2+22+2 = 42 prefix → msg gets inner-44
+        msg_width = max(20, inner - 44)
+
+        lines = []
+        for entry in entries:
+            ts    = entry.get("ts", "")
+            src   = entry.get("source", "?")
+            rule  = entry.get("rule", "")
+            msg   = entry.get("msg", "")
+            date_str = ts[:10]   if len(ts) >= 10 else "?"
+            time_str = ts[11:16] if len(ts) >= 16 else ts
+
+            # Day header on date change
+            if date_str != last_date:
+                last_date = date_str
+                if date_str == today:
+                    day_label = f"Today  {date_str}"
+                elif date_str == yesterday:
+                    day_label = f"Yesterday  {date_str}"
+                else:
+                    day_label = date_str
+                lines.append(ContentLine([(A_DIM | A_BOLD, f"  {day_label}")], bordered=False))
+
+            src_attr  = self._source_attr(src)
+            rule_disp = (rule[:19] + "…") if len(rule) > 20 else rule
+            msg_disp  = (msg[:msg_width - 1] + "…") if len(msg) > msg_width else msg
+            lines.append(ContentLine([
+                (A_DIM,              f"  {time_str}  "),
+                (src_attr | A_BOLD,  f"[{src:<4}]"),
+                (A_DIM,              "  "),
+                (A_NORMAL,           f"{rule_disp:<22}"),
+                (A_NORMAL,           msg_disp),
+            ]))
+
+        return lines
+
+    def _draw_log_view(self, rows, cols, inner, ctrl_rows):
+        A_BOLD = curses.A_BOLD
+
+        # Header: top border with centred title + divider
+        label = " Change Log "
+        self._draw_item(0, HLine(curses.ACS_ULCORNER, curses.ACS_URCORNER), cols, inner)
+        try:
+            self.stdscr.addstr(0, max(1, (cols - len(label)) // 2), label, A_BOLD)
+        except curses.error:
+            pass
+        self._draw_item(1, HLine(curses.ACS_LTEE, curses.ACS_RTEE), cols, inner)
+
+        content_top  = 2
+        content_rows = rows - ctrl_rows - content_top
+        if content_rows <= 0:
+            return
+
+        lines = self._build_log_display(inner)
+
+        # Clamp scroll
+        max_scroll      = max(0, len(lines) - content_rows)
+        self.log_scroll = max(0, min(self.log_scroll, max_scroll))
+
+        # Scroll indicators on the divider
+        self._draw_scroll_indicators(1, cols, self.log_scroll > 0, self.log_scroll < max_scroll)
+
+        EMPTY   = ContentLine([])
+        visible = lines[self.log_scroll: self.log_scroll + content_rows]
+        for i in range(content_rows):
+            item = visible[i] if i < len(visible) else EMPTY
+            self._draw_item(content_top + i, item, cols, inner)
+
     # ── Rendering ─────────────────────────────────────────────────────────────
 
     def _draw_controls(self, rows: int, cols: int, inner: int, ctrl_rows: int | None = None):
@@ -1932,7 +2146,7 @@ class TUI:
         ctrl_sep  = rows - ctrl_rows
         pane_open = self.eval_open or self.shadow_open or self.rec_open
         ctrl_battr = CP8 if pane_open else None
-        box_open = pane_open or self.detail_open
+        box_open = pane_open or self.detail_open or self.log_open
         sep_lch = curses.ACS_LLCORNER if box_open else curses.ACS_HLINE
         sep_rch = curses.ACS_LRCORNER if box_open else curses.ACS_HLINE
         self._draw_item(ctrl_sep, HLine(sep_lch, sep_rch),
@@ -1989,6 +2203,9 @@ class TUI:
                     accepted_count = len(self._rec_accepted)
                 proc_hint = f"[enter] process {accepted_count}  ·  " if accepted_count else ""
                 segs = [(A_DIM, f"  ↑↓ navigate  [a] accept  [d] dismiss  [r] re-run  {proc_hint}[esc/p] close")]
+
+        elif self.log_open:
+            segs = [(A_DIM, "  [↑↓] scroll  ·  [esc/c] close")]
 
         elif self.shadow_open:
             if self.shadow_active:
@@ -2086,6 +2303,9 @@ class TUI:
             self._hide_cursor()
 
     def render(self):
+        if self.log_open:
+            self._render_log()
+            return
         if self.detail_open:
             self._render_detail()
             return
@@ -2136,7 +2356,9 @@ class TUI:
 
         # Clamp eval scroll so cursor stays visible
         if eval_rows > 0:
-            visible_input_rows = max(1, eval_rows - 1)
+            _eval_overhead = self._pane_overhead(
+                "Test a command against the engine to see which rule fires.", inner)
+            visible_input_rows = max(1, eval_rows - _eval_overhead)
             cur_line, _ = self._cursor_line_col()
             if cur_line < self._eval_scroll:
                 self._eval_scroll = cur_line
@@ -2185,7 +2407,10 @@ class TUI:
             if self.dirty:
                 self.render()
 
-            ev = self._read_event()
+            if self._pending_ev is not None:
+                ev, self._pending_ev = self._pending_ev, None
+            else:
+                ev = self._read_event()
             if ev is None:
                 time.sleep(0.05)
                 continue
@@ -2200,6 +2425,31 @@ class TUI:
 
             rows, cols    = self.stdscr.getmaxyx()
             inner         = cols - 2
+
+            # ── Change log view ───────────────────────────────────────────────
+            if self.log_open:
+                if ev in (27, ord('c'), ord('C')):
+                    self.log_open = False
+                    self._invalidate()
+                elif ev in (curses.KEY_UP, ord('k')):
+                    self.log_scroll = max(0, self.log_scroll - 1)
+                    self.dirty = True
+                elif ev in (curses.KEY_DOWN, ord('j')):
+                    self.log_scroll += 1  # clamped in _draw_log_view
+                    self.dirty = True
+                elif ev == curses.KEY_PPAGE:
+                    self.log_scroll = max(0, self.log_scroll - max(1, (rows - 4) // 2))
+                    self.dirty = True
+                elif ev == curses.KEY_NPAGE:
+                    self.log_scroll += max(1, (rows - 4) // 2)  # clamped in _draw_log_view
+                    self.dirty = True
+                elif ev == curses.KEY_HOME:
+                    self.log_scroll = 0
+                    self.dirty = True
+                elif ev == curses.KEY_END:
+                    self.log_scroll = 999999  # clamped in _draw_log_view
+                    self.dirty = True
+                continue
 
             # ── Rule detail view ──────────────────────────────────────────────
             if self.detail_open:
@@ -2244,6 +2494,7 @@ class TUI:
                     if ev in (ord('y'), ord('Y')):
                         rule = rules[self.detail_rule_idx] if self.detail_rule_idx < len(rules) else None
                         if rule:
+                            append_change_log("DEL", rule.name, "Rule deleted by user")
                             delete_rule(rule)
                             with self._lock:
                                 self.rules  = [r for r in self.rules if r != rule]
@@ -2443,13 +2694,23 @@ class TUI:
                     if (self.eval_result or {}).get('verdict') == 'defer':
                         self._add_allow_rule(self.eval_input.strip())
                         self._invalidate()
-                else:
-                    # Any other key (including ESC, q) closes the panel
+                elif ev == 27:  # ESC: close panel
                     self.eval_open = False
                     self._clear_eval_input()
                     self._invalidate()
-                    if ev in (ord('q'), ord('Q')):
-                        break
+                elif ev in (ord('q'), ord('Q')):  # q: close and quit
+                    self.eval_open = False
+                    self._clear_eval_input()
+                    self._invalidate()
+                    break
+                else:
+                    # Any other key (cursor movement, printable, etc.): re-enter typing mode
+                    # and replay the key so it's processed by the typing handler.
+                    self.eval_result  = None
+                    self.highlighted  = None
+                    self.hi_verdict   = None
+                    self._pending_ev  = ev
+                    self._invalidate()
                 continue
 
             # ── Normal mode ───────────────────────────────────────────────────
@@ -2481,6 +2742,13 @@ class TUI:
                     self.eval_open   = False
                     self.rec_open    = False
                     self._invalidate()
+            elif ev in (ord('c'), ord('C')):
+                self.log_open    = True
+                self.log_scroll  = 0
+                self.eval_open   = False
+                self.shadow_open = False
+                self.rec_open    = False
+                self._invalidate()
             elif ev in (ord('p'), ord('P')):
                 with self._lock:
                     processing = self.rec_processing
@@ -2555,5 +2823,10 @@ def main(stdscr):
 
 
 if __name__ == "__main__":
+    if len(sys.argv) >= 2 and sys.argv[1] == "--log":
+        # Write a change log entry: summary.py --log SOURCE RULE MESSAGE...
+        if len(sys.argv) >= 5:
+            append_change_log(sys.argv[2], sys.argv[3], " ".join(sys.argv[4:]))
+        sys.exit(0)
     os.environ.setdefault("ESCDELAY", "25")
     curses.wrapper(main)
