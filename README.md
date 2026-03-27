@@ -11,7 +11,7 @@ This project replaces that with a **rule-file engine**: small shell scripts that
 `hooks/unfence.sh` is a `PreToolUse` hook. When Claude Code is about to run a Bash command, the engine:
 
 1. Splits compound commands (`&&`, `||`, `;`, `|`) while respecting quotes and heredocs.
-2. Normalizes each part (strips redirections, `VAR=` prefixes, transparent flags like `-C <path>`).
+2. Normalizes each part (strips redirections, `VAR=` prefixes).
 3. Runs each part through every rule file in `rules/` in filename-sorted order.
 4. Combines verdicts: `deny` beats `ask` beats `allow`; any unmatched part defers to Claude Code's built-in prompt.
 
@@ -71,6 +71,9 @@ Rules are normally written by agents (see [Recommended workflow](#recommended-wo
 **`0-unwrap.sh` — `recurse:` (preprocessing layer)**
 Strips a wrapper command and re-runs the full pipeline on the inner command. Handles `xargs`, `eval`, and `bash`/`sh`/`zsh -c` out of the box. This means every other rule you write automatically extends to those wrapper forms for free. The `recurse:` return value is unique to this engine.
 
+**`0-strip-flags.sh` — transparent flag stripping**
+Some flags modify execution context (e.g. `git -C /path`) without changing the semantic identity of the command. This rule strips known flag-value pairs per tool and recurses on the clean command, so all downstream rules see `git log` instead of `git -C /repo log`. The pattern is always tool-specific: only strip flags you know consume a value for a particular command — global stripping would silently corrupt flags that are meaningful for other tools.
+
 **`1-lists.sh` — specificity-based ALLOW / DENY / ASK lists**
 The main workhorse. Define three arrays of command prefixes. The most-specific match wins, with `deny > ask > allow` on ties. This lets you block `git push --force` while still allowing `git push` — a more-specific rule always beats a less-specific one. Flags like `--force` can appear anywhere in the command and still be matched.
 
@@ -87,7 +90,15 @@ Some rules apply across all commands based purely on flags, not the command name
 When a tool's CLI follows a consistent naming convention, match the pattern instead of enumerating every subcommand. AWS read-only operations are all prefixed `describe-*`, `list-*`, `get-*` — a single `case` match covers hundreds of subcommands. More robust than maintaining an exhaustive list, and automatically correct for new subcommands as the tool evolves.
 
 **Environment-aware / project-config rules (e.g. `1-check-sf.sh`)**
-Rules can read environment variables and external JSON config, not just the command string. If a file named `.claude/unfence.json` exists in the project root, the engine loads it and exports its contents as `$PROJECT_CONFIG`. Rules can then use `jq` to extract project-specific values and make context-sensitive decisions — for example, allowing a `sf deploy` command only when `--target-org` matches an org listed in `.salesforce.safe-orgs`. This is the pattern to reach for when "always allow" is too coarse but "always ask" is too noisy.
+Rules can read environment variables and external JSON config, not just the command string. If a file named `.claude/unfence.json` exists in the project root, the engine loads it and exports its contents as `$PROJECT_CONFIG`. Rules can then use `jq` to extract project-specific values and make context-sensitive decisions. This is the pattern to reach for when "always allow" is too coarse but "always ask" is too noisy.
+
+A few examples of what this unlocks:
+
+- **Salesforce:** allow `sf project deploy start` only when `--target-org` matches an org listed in `.salesforce.safe-orgs` — so Claude can deploy freely to scratch orgs but must ask for production.
+- **AWS — safe profiles:** allow any `aws` command when `--profile` matches a read-only or sandbox profile listed in `.aws.safe-profiles` — Claude gets full autonomy within the sandbox, zero autonomy outside it.
+- **AWS — safe resource IDs:** go further and list specific instance IDs, bucket names, or cluster ARNs in `.aws.safe-resources`; the rule checks whether every resource argument in the command is on that list. Claude can operate freely on the resources it created for this task and nothing else.
+
+The possibilities scale with the task. For a focused refactoring session you might allow all `git` operations on a single branch. For a data pipeline run you might allow `aws s3` reads from one specific bucket. The config file is project-local and git-tracked, so the scope of Claude's autonomy is explicit, reviewable, and easy to tighten or widen per task.
 
 **Filename prefix conventions:**
 - `0-*` — Unwrappers / preprocessors (run first)
@@ -131,6 +142,9 @@ If you copied the sample rules in step 2, open the TUI and try the eval pane (`e
 
 > xargs git log
   ✓ allow  (0-unwrap.sh → recurse → 1-lists.sh)
+
+> git -C /some/repo status
+  ✓ allow  (0-strip-flags.sh → recurse → 1-lists.sh)
 ```
 
 The eval pane shows which rule fired and scrolls the rule list to highlight it — a fast way to understand why a command was allowed or blocked and to verify changes before committing them.

@@ -8,7 +8,7 @@ The engine (`~/.claude/unfence/hooks/unfence.sh`) is a PreToolUse hook for Claud
 
 1. Parses the command from the hook's JSON input.
 2. Splits compound commands (`&&`, `||`, `;`, `|`, newlines) while respecting quotes and heredocs.
-3. For each sub-command, normalizes it (strips redirections, `VAR=` prefixes, transparent flags like `-C <path>`).
+3. For each sub-command, normalizes it (strips redirections, `VAR=` prefixes).
 4. Runs the normalized command through rule files in **filename-sorted order** until one returns a definitive verdict.
 5. Combines verdicts across sub-commands: `deny` wins over `ask`, which wins over `allow`; any unknown part causes `defer`.
 
@@ -66,6 +66,24 @@ Where `expected_verdict` is one of: `allow`, `deny`, `defer` (note: `ask` rules 
 ## Rule File Agnosticism
 
 Nothing in the engine or the TUI should hardcode knowledge about specific rule file names, internal structures, or arrays (e.g. do not assume `1-lists.sh` exists or has an ALLOW array). When adding UI features that create or modify rules, use Claude as the agent (via `--dangerously-skip-permissions`) to read the existing rule files, understand the conventions, and decide where and how to make changes. Never hardcode "append to ALLOW array in `1-lists.sh`" or similar assumptions.
+
+## Transparent Flag Stripping
+
+Flags that modify execution context (e.g. `git -C <path>`) without changing the semantic identity of the command are "transparent". Stripping them is a normalization concern that belongs in a `0-*` preprocessing rule using `recurse:` — **not in the engine**.
+
+Key principles:
+- **Always tool-specific.** Only strip flags you know consume a value token for a particular command. Global stripping across all commands would silently corrupt flags that are meaningful for other tools.
+- **Boolean flags are never transparent in this sense.** Only value-consuming flags qualify. A flag that takes no argument (e.g. `git -p` / `--paginate`) must not be treated as consuming the next token.
+- **Use `recurse:` to restart the full pipeline.** This ensures all downstream rules (lists and checkers) see the clean command automatically.
+- See `0-strip-flags.sh` (in both `rules/` and `sample-rules/`) for the canonical implementation.
+
+## TUI Syntax Check
+
+`summary.py` requires an interactive terminal and cannot be run non-interactively. To verify it still compiles after changes, use:
+
+```bash
+python3 -m py_compile summary.py && echo OK
+```
 
 ## Rule Count Discipline
 
