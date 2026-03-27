@@ -179,6 +179,11 @@ classify_single() {
   [[ ${#TOKENS[@]} -eq 0 ]] && echo "allow" && return
 
   # Strip variable-assignment prefix
+  # $((…)) arithmetic expansion: no external command, always safe.
+  # Must be checked before the generic VAR=$( branch since $(( matches $(.
+  if [[ "${TOKENS[0]}" =~ ^[A-Za-z_][A-Za-z0-9_]*=\$\(\( ]]; then
+    echo "allow"; return
+  fi
   if [[ "${TOKENS[0]}" =~ ^[A-Za-z_][A-Za-z0-9_]*=\$\( ]]; then
     local rest="${TOKENS[0]#*=\$(}"
     if [[ -n "$rest" ]]; then TOKENS[0]="$rest"; else TOKENS=("${TOKENS[@]:1}"); fi
@@ -187,6 +192,10 @@ classify_single() {
   elif [[ "${TOKENS[0]}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
     echo "allow"; return   # simple VAR=value → allow
   fi
+  # Strip leading inline env-var prefixes (e.g. TZ=UTC from 'var=$(TZ=UTC cmd ...)')
+  while [[ ${#TOKENS[@]} -gt 0 && "${TOKENS[0]}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; do
+    TOKENS=("${TOKENS[@]:1}")
+  done
   [[ ${#TOKENS[@]} -eq 0 ]] && echo "allow" && return
 
   local normalized="${TOKENS[*]}"
@@ -237,6 +246,7 @@ fi
 # ── EVAL_MODE: called by the summary TUI for live evaluation ──────────────────
 # Usage: EVAL_MODE=1 CMD="<raw command>" bash unfence.sh
 # Output: {"verdict":"allow|deny|ask|defer","rule":"filename or null"}
+# On defer: also includes "parts": ["cmd1","cmd2",...] listing the unmatched parts.
 if [[ -n "$EVAL_MODE" ]]; then
   RAW_COMMAND=$(printf '%s' "${CMD:-}" | sed '/^[[:space:]]*#/d')
   if [[ -z "$RAW_COMMAND" ]]; then
@@ -245,6 +255,7 @@ if [[ -n "$EVAL_MODE" ]]; then
 
   has_deny=false; has_ask=false; all_allow=true
   deny_rule=""; ask_rule=""; allow_rule=""
+  defer_parts=()
   _vtmp=$(mktemp)
 
   while IFS= read -r -d '' part; do
@@ -258,16 +269,24 @@ if [[ -n "$EVAL_MODE" ]]; then
       deny)  has_deny=true; all_allow=false; [[ -z "$deny_rule"  ]] && deny_rule="$r"  ;;
       ask)   has_ask=true;  all_allow=false; [[ -z "$ask_rule"   ]] && ask_rule="$r"   ;;
       allow) [[ -z "$allow_rule" ]] && allow_rule="$r" ;;
-      *)     all_allow=false ;;
+      *)     all_allow=false; defer_parts+=("$part") ;;
     esac
   done < <(split_commands "$RAW_COMMAND")
   rm -f "$_vtmp"
 
   _null_or_str() { [[ -n "$1" ]] && printf '"%s"' "$1" || printf 'null'; }
+  _parts_json() {
+    local json="[" sep=""
+    for p in "${defer_parts[@]}"; do
+      json+="${sep}$(printf '%s' "$p" | jq -Rs .)"
+      sep=","
+    done
+    printf '%s]' "$json"
+  }
   if   $has_deny;  then printf '{"verdict":"deny","rule":%s}\n'  "$(_null_or_str "$deny_rule")"
   elif $has_ask;   then printf '{"verdict":"ask","rule":%s}\n'   "$(_null_or_str "$ask_rule")"
   elif $all_allow; then printf '{"verdict":"allow","rule":%s}\n' "$(_null_or_str "$allow_rule")"
-  else                  printf '{"verdict":"defer","rule":null}\n'
+  else                  printf '{"verdict":"defer","rule":null,"parts":%s}\n' "$(_parts_json)"
   fi
   exit 0
 fi
