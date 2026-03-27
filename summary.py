@@ -256,8 +256,13 @@ def analyze_recommendations(deferred: dict, dismissed: set, on_proc=None) -> lis
         "If the answer is anything beyond harmless read-only introspection, drop it.\n\n"
         "Commands (count × pattern  e.g. example):\n"
         + "\n".join(lines) + "\n\n"
+        "PATTERN SPECIFICITY: Choose the most specific safe prefix — use the examples to "
+        "determine the right depth. If all examples share the same subcommand (e.g. 'sf config get'), "
+        "use that full subcommand as the pattern. Only use a short 1-2 token prefix when the "
+        "examples vary in subcommand and all variants are safe. Never return a shorter prefix "
+        "than what the examples justify.\n\n"
         "Return a JSON array of safe patterns only:\n"
-        '[{"pattern": "first 1-2 token prefix", "examples": ["ex1"], "count": N, "rationale": "one sentence why safe"}]\n'
+        '[{"pattern": "most specific safe prefix", "examples": ["ex1", "ex2"], "count": N, "rationale": "one sentence why safe"}]\n'
         "Return [] if nothing is clearly safe. No markdown fences."
     )
 
@@ -294,13 +299,19 @@ def analyze_recommendations(deferred: dict, dismissed: set, on_proc=None) -> lis
             p = item.get("pattern", "")
             if not p:
                 continue
-            # Find actual data for this pattern
+            # Find actual data for this pattern. The AI may return a more specific
+            # prefix than the 2-token grouping keys in deferred (e.g. "gh auth status"
+            # vs key "gh auth"), so match both directions.
             matching = {k: v for k, v in deferred.items()
-                        if k == p or k.startswith(p)}
+                        if k == p or k.startswith(p) or p.startswith(k)}
             total = sum(v["count"] for v in matching.values())
-            exs = []
+            all_exs = []
             for v in matching.values():
-                exs.extend(v["examples"])
+                all_exs.extend(v["examples"])
+            # Prefer examples that actually start with the recommended pattern.
+            # Fall back to all examples only if none match (e.g. pattern is more
+            # specific than the deferred grouping key).
+            exs = [e for e in all_exs if e.startswith(p)] or all_exs
             result.append({
                 "pattern": p,
                 "examples": exs[:5],
@@ -936,6 +947,7 @@ class TUI:
 
         if not self._spawn_claude_task(
             log_path, prompt,
+            name="unfence: implement recommendations",
             proc_attr='_rec_proc', active_attr='rec_processing',
             on_start=lambda: self._rec_accepted.clear(),
             on_done=on_done,
@@ -1486,10 +1498,10 @@ class TUI:
                             row += 1
 
     def _rec_item_rows(self, rec: dict, wrap_w: int) -> int:
-        """Rows consumed by one rec: 1 (pattern) + wrapped rationale lines."""
+        """Rows consumed by one rec: 1 (pattern) + 1 (examples) + wrapped rationale lines."""
         import textwrap
         rat = rec.get("rationale", "") or "(no rationale)"
-        return 1 + max(1, len(textwrap.wrap(rat, wrap_w)))
+        return 1 + 1 + max(1, len(textwrap.wrap(rat, wrap_w)))
 
     def _rec_pane_rows(self, rows: int, inner: int) -> int:
         if not self.rec_open:
@@ -1560,6 +1572,30 @@ class TUI:
                         pass
                 self._draw_item(row, ContentLine(segs), cols, inner, border_attr=battr)
                 row += 1
+
+                # Examples — show actual commands seen, truncated to fit.
+                # If an example doesn't start with the pattern, find the first
+                # token position where the pattern begins and prefix with "…".
+                if row < rows:
+                    pat = rec.get("pattern", "")
+                    exs = rec.get("examples", [])
+                    def _fmt_example(ex: str) -> str:
+                        if ex.startswith(pat):
+                            return ex
+                        # Find where the pattern starts within the example tokens
+                        toks = ex.split()
+                        pat_toks = pat.split()
+                        for i in range(len(toks)):
+                            if toks[i:i + len(pat_toks)] == pat_toks:
+                                return "… " + " ".join(toks[i:])
+                        return ex  # no match found, show as-is
+                    formatted = [_fmt_example(e) for e in exs[:2]]
+                    ex_str = "  e.g. " + "  |  ".join(formatted) if formatted else ""
+                    max_ex = max(1, inner - 6)
+                    if len(ex_str) > max_ex:
+                        ex_str = ex_str[:max_ex - 1] + "…"
+                    self._draw_item(row, ContentLine([(A_DIM, f"     {ex_str}")]), cols, inner, border_attr=battr)
+                    row += 1
 
                 # Rationale — wrapped across as many rows as needed
                 import textwrap
@@ -1947,18 +1983,18 @@ class TUI:
             if self.rec_processing:
                 segs = [(CP4, "  Implementing recommendations, please wait…")]
             elif self.rec_analyzing:
-                segs = [(A_DIM, "  Analyzing recommendations…   [p] close")]
+                segs = [(A_DIM, "  Analyzing recommendations…   [esc/p] close")]
             else:
                 with self._lock:
                     accepted_count = len(self._rec_accepted)
                 proc_hint = f"[enter] process {accepted_count}  ·  " if accepted_count else ""
-                segs = [(A_DIM, f"  ↑↓ navigate  [a] accept  [d] dismiss  [r] re-run  {proc_hint}[p] close")]
+                segs = [(A_DIM, f"  ↑↓ navigate  [a] accept  [d] dismiss  [r] re-run  {proc_hint}[esc/p] close")]
 
         elif self.shadow_open:
             if self.shadow_active:
-                segs = [(A_DIM, "  Analyzing shadows…   [s] close")]
+                segs = [(A_DIM, "  Analyzing shadows…   [esc/s] close")]
             else:
-                segs = [(A_DIM, "  [s] close  ·  [r] re-run analysis")]
+                segs = [(A_DIM, "  [esc/s] close  ·  [r] re-run analysis")]
 
         else:
             # Main view — wrap tokens across as many rows as needed
