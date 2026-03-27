@@ -4,6 +4,7 @@
 import curses
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -400,6 +401,44 @@ def rec_cache_stale() -> bool:
 
 
 
+def load_deferred_commands() -> list[tuple[str, str]]:
+    """Parse the unfence log and return (timestamp, command) for deferred sessions, newest first."""
+    log_file = PROJECT_DIR / "logs" / "unfence.log"
+    if not log_file.exists():
+        return []
+    LOG_RE = re.compile(r'^\[([^\]]+)\] \[(\d+)\] (.+)$')
+    pid_input: dict[str, tuple[str, str]] = {}   # pid -> (ts, command)
+    results: list[tuple[str, str]] = []
+    cur_pid: str | None = None
+    cur_ts:  str        = ""
+    cur_lines: list[str] = []
+
+    def _flush():
+        if cur_pid and cur_lines:
+            msg = "\n".join(cur_lines)
+            if msg.startswith("INPUT "):
+                pid_input[cur_pid] = (cur_ts, msg[6:])
+            elif msg == "=> defer (some parts had no matching rule)":
+                if cur_pid in pid_input:
+                    results.append(pid_input[cur_pid])
+
+    try:
+        with open(log_file, "r", errors="replace") as fh:
+            for raw in fh:
+                line = raw.rstrip("\n")
+                m = LOG_RE.match(line)
+                if m:
+                    _flush()
+                    cur_ts, cur_pid, cur_lines = m.group(1), m.group(2), [m.group(3)]
+                else:
+                    cur_lines.append(line)
+        _flush()
+    except OSError:
+        pass
+    results.reverse()
+    return results
+
+
 def load_log_stats() -> dict:
     """Count allow/deny/defer verdicts from the last 30 days of the engine log.
     Cached by log (mtime, size).
@@ -705,6 +744,15 @@ class TUI:
         # Change log view state
         self.log_open   = False
         self.log_scroll = 0
+
+        # Deferred log view state
+        self.deferlog_open     = False
+        self.deferlog_entries  = []   # list of (timestamp_str, command_str), newest first
+        self.deferlog_cursor   = 0    # index into deferlog_entries
+        self.deferlog_scroll   = 0    # scroll offset for command body
+        self.deferlog_evaling  = False
+        self._deferlog_eval_proc = None
+        self.deferlog_eval_result = None  # same dict shape as eval_result
 
         # Rule detail pane state
         self.detail_open            = False
@@ -1058,7 +1106,7 @@ class TUI:
         )
         return ["[r] reload", "[ctrl+r] hard reload", "[e] eval",
                 "[↑↓] navigate  [enter/→/1-9] detail",
-                shd_key, rec_key, "[c] changelog", "[q] quit"]
+                shd_key, rec_key, "[c] changelog", "[d] deferlog", "[q] quit"]
 
     def _wrap_ctrl_tokens(self, tokens: list[str], inner: int) -> list[str]:
         """Greedily pack tokens into lines that fit within inner width (2-char indent)."""
@@ -1087,7 +1135,6 @@ class TUI:
         """Eval controls as a list of segs-lists (one entry per content row)."""
         A_DIM    = curses.A_DIM
         A_NORMAL = curses.A_NORMAL
-        A_BOLD   = curses.A_BOLD
         CP1 = curses.color_pair(1)
         CP2 = curses.color_pair(2)
         CP4 = curses.color_pair(4)
@@ -1098,7 +1145,7 @@ class TUI:
             if r.get("success"):
                 rule = r.get("rule", "a rule file")
                 pat  = r.get("pattern", "")
-                return [[(CP6 | A_BOLD, f"  Added to {rule}: {pat}   [any key] dismiss")]]
+                return [[(CP6 | curses.A_BOLD, f"  Added to {rule}: {pat}   [any key] dismiss")]]
             elif r.get("engine_issue"):
                 return [[(CP1, f"  Engine issue (not a missing rule): {r.get('error', '')}   [any key] dismiss")]]
             else:
@@ -1110,39 +1157,21 @@ class TUI:
             return [[(A_DIM, "   [shift+enter] newline  ·  [enter] run  ·  [esc] close")]]
         if res.get("running"):
             return [[(A_DIM, "   running…")]]
-        verdict   = res["verdict"]
-        rule_name = res.get("rule_name")
-        rule_num  = res.get("rule_num")
-        v_attr = {"allow": CP6 | A_BOLD, "deny": CP2 | A_BOLD,
-                  "ask": CP1 | A_BOLD, "defer": A_DIM}.get(verdict, A_NORMAL)
-        verdict_segs = [(A_NORMAL, "   → "), (v_attr, verdict.upper())]
-        if rule_name and rule_num:
-            verdict_segs += [(A_DIM, f"  ·  #{rule_num} {rule_name}")]
-        elif not rule_name:
-            verdict_segs += [(A_DIM, "  ·  no rule matched")]
+        verdict = res["verdict"]
+        # Use shared helper for verdict + unmatched rendering
+        result_lines = self._eval_result_lines(res, cols)
+        # Append navigation hint to the first line
         allow_hint = "   [A] add to allow  ·  " if verdict == "defer" else "   "
         hint_segs  = [(A_DIM, allow_hint + "[enter] edit  ·  [n] new  ·  [esc] close")]
-        prefix_len = sum(len(t) for _, t in verdict_segs)
-        hint_len   = sum(len(t) for _, t in hint_segs)
-        lines = [verdict_segs + hint_segs] if prefix_len + hint_len <= cols else [verdict_segs, hint_segs]
-        if verdict == "defer":
-            deferred = res.get("deferred_parts") or []
-            if deferred:
-                MAX_PART = 50
-                SEP = "  ·  "
-                prefix  = "   unmatched: "
-                indent  = " " * len(prefix)
-                formatted = [p[:MAX_PART] + "…" if len(p) > MAX_PART else p for p in deferred]
-                current = prefix
-                for i, part in enumerate(formatted):
-                    chunk = (SEP if i > 0 else "") + part
-                    if i > 0 and len(current) + len(chunk) > cols:
-                        lines.append([(A_DIM, current)])
-                        current = indent + part
-                    else:
-                        current += chunk
-                lines.append([(A_DIM, current)])
-        return lines
+        if result_lines:
+            first_line = result_lines[0]
+            prefix_len = sum(len(t) for _, t in first_line)
+            hint_len   = sum(len(t) for _, t in hint_segs)
+            if prefix_len + hint_len <= cols:
+                result_lines[0] = first_line + hint_segs
+            else:
+                result_lines.insert(1, hint_segs)
+        return result_lines
 
     def _ctrl_rows(self, inner: int) -> int:
         """Number of rows for the bottom controls strip in the current context."""
@@ -1347,13 +1376,53 @@ class TUI:
 
     # ── Evaluation ────────────────────────────────────────────────────────────
 
-    def _run_eval(self):
-        cmd = self.eval_input.strip()
-        if not cmd:
-            return
+    def _eval_result_lines(self, res: dict, cols: int) -> list[list[tuple]]:
+        """Convert an eval result dict into a list of segs-lists (one per display row).
+        Returns [] if res is None or running."""
+        if res is None or res.get("running"):
+            return []
+        A_DIM    = curses.A_DIM
+        A_NORMAL = curses.A_NORMAL
+        A_BOLD   = curses.A_BOLD
+        CP1 = curses.color_pair(1)
+        CP2 = curses.color_pair(2)
+        CP6 = curses.color_pair(6)
+        verdict   = res["verdict"]
+        rule_name = res.get("rule_name")
+        rule_num  = res.get("rule_num")
+        v_attr = {"allow": CP6 | A_BOLD, "deny": CP2 | A_BOLD,
+                  "ask":   CP1 | A_BOLD, "defer": A_DIM}.get(verdict, A_NORMAL)
+        verdict_segs = [(A_NORMAL, "   → "), (v_attr, verdict.upper())]
+        if rule_name and rule_num:
+            verdict_segs += [(A_DIM, f"  ·  #{rule_num} {rule_name}")]
+        else:
+            verdict_segs += [(A_DIM, "  ·  no rule matched")]
+        lines = [verdict_segs]
+        if verdict == "defer":
+            deferred = res.get("deferred_parts") or []
+            if deferred:
+                MAX_PART = 50
+                SEP      = "  ·  "
+                prefix   = "   unmatched: "
+                indent   = " " * len(prefix)
+                formatted = [p[:MAX_PART] + "…" if len(p) > MAX_PART else p for p in deferred]
+                current = prefix
+                for i, part in enumerate(formatted):
+                    chunk = (SEP if i > 0 else "") + part
+                    if i > 0 and len(current) + len(chunk) > cols:
+                        lines.append([(A_DIM, current)])
+                        current = indent + part
+                    else:
+                        current += chunk
+                lines.append([(A_DIM, current)])
+        return lines
+
+    def _run_eval_async(self, cmd: str, result_attr: str, highlight: bool = True):
+        """Run cmd through the engine in a background thread, storing result in self.<result_attr>."""
         with self._lock:
-            self.eval_result = {"running": True, "verdict": "…",
-                                "rule_name": None, "rule_num": None}
+            setattr(self, result_attr, {"running": True, "verdict": "…",
+                                        "rule_name": None, "rule_num": None,
+                                        "deferred_parts": []})
         self.dirty = True
 
         def work():
@@ -1362,16 +1431,23 @@ class TUI:
                 rules = list(self.rules)
             rule_num = next((i + 1 for i, r in enumerate(rules) if r.name == rule_name), None)
             with self._lock:
-                self.eval_result = {"running": False, "verdict": verdict,
-                                    "rule_name": rule_name, "rule_num": rule_num,
-                                    "deferred_parts": deferred_parts}
-                self.highlighted = rule_name
-                self.hi_verdict  = verdict
-            if rule_num is not None:
+                setattr(self, result_attr, {"running": False, "verdict": verdict,
+                                            "rule_name": rule_name, "rule_num": rule_num,
+                                            "deferred_parts": deferred_parts})
+                if highlight:
+                    self.highlighted = rule_name
+                    self.hi_verdict  = verdict
+            if highlight and rule_num is not None:
                 self._scroll_to_rule(rule_num - 1)
             self._invalidate()
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _run_eval(self):
+        cmd = self.eval_input.strip()
+        if not cmd:
+            return
+        self._run_eval_async(cmd, 'eval_result', highlight=True)
 
     def _add_allow_rule(self, cmd: str):
         """Spawn Claude to identify the deferring sub-command and add an allow rule."""
@@ -2097,18 +2173,20 @@ class TUI:
         return lines
 
     def _draw_log_view(self, rows, cols, inner, ctrl_rows):
+        A_DIM  = curses.A_DIM
         A_BOLD = curses.A_BOLD
 
-        # Header: top border with centred title + divider
+        # Header: title border + description + divider
         label = " Change Log "
         self._draw_item(0, HLine(curses.ACS_ULCORNER, curses.ACS_URCORNER), cols, inner)
         try:
             self.stdscr.addstr(0, max(1, (cols - len(label)) // 2), label, A_BOLD)
         except curses.error:
             pass
-        self._draw_item(1, HLine(curses.ACS_LTEE, curses.ACS_RTEE), cols, inner)
+        self._draw_item(1, ContentLine([(A_DIM, "  Rule changes recorded across sessions.")]), cols, inner)
+        self._draw_item(2, HLine(curses.ACS_LTEE, curses.ACS_RTEE), cols, inner)
 
-        content_top  = 2
+        content_top  = 3
         content_rows = rows - ctrl_rows - content_top
         if content_rows <= 0:
             return
@@ -2120,13 +2198,122 @@ class TUI:
         self.log_scroll = max(0, min(self.log_scroll, max_scroll))
 
         # Scroll indicators on the divider
-        self._draw_scroll_indicators(1, cols, self.log_scroll > 0, self.log_scroll < max_scroll)
+        self._draw_scroll_indicators(2, cols, self.log_scroll > 0, self.log_scroll < max_scroll)
 
         EMPTY   = ContentLine([])
         visible = lines[self.log_scroll: self.log_scroll + content_rows]
         for i in range(content_rows):
             item = visible[i] if i < len(visible) else EMPTY
             self._draw_item(content_top + i, item, cols, inner)
+
+    # ── Deferred log view ─────────────────────────────────────────────────────
+
+    def _render_deferlog(self):
+        rows, cols = self.stdscr.getmaxyx()
+        inner      = cols - 2
+        self.stdscr.erase()
+        self._draw_deferlog_view(rows, cols, inner)
+        self._hide_cursor()
+        self._apply_cursor()
+        self.stdscr.refresh()
+        self.dirty = False
+
+    def _draw_deferlog_view(self, rows, cols, inner):
+        A_DIM    = curses.A_DIM
+        A_NORMAL = curses.A_NORMAL
+        A_BOLD   = curses.A_BOLD
+
+        entries = self.deferlog_entries
+        n       = len(entries)
+        cursor  = self.deferlog_cursor
+
+        # ── Header: title + description + divider ─────────────────────────────
+        left_arrow  = "← " if cursor > 0     else ""
+        right_arrow = " →" if n > 0 and cursor < n - 1 else ""
+        count_str   = f" {left_arrow}{cursor + 1}/{n}{right_arrow} " if n else " 0/0 "
+        label       = " Deferred Log "
+        self._draw_item(0, HLine(curses.ACS_ULCORNER, curses.ACS_URCORNER), cols, inner)
+        try:
+            self.stdscr.addstr(0, max(1, (cols - len(label)) // 2), label, A_BOLD)
+            self.stdscr.addstr(0, max(1, cols - len(count_str) - 1), count_str, A_DIM)
+        except curses.error:
+            pass
+        self._draw_item(1, ContentLine([(A_DIM, "  Commands with no matching rule (true gaps) — newest first.")]), cols, inner)
+        self._draw_item(2, HLine(curses.ACS_LTEE, curses.ACS_RTEE), cols, inner)
+
+        # ── Ctrl rows at bottom ────────────────────────────────────────────────
+        ctrl_lines = self._deferlog_ctrl_lines(cols)
+        ctrl_rows  = 1 + len(ctrl_lines)   # sep + content lines
+
+        content_top  = 3
+        content_rows = rows - ctrl_rows - content_top
+        if content_rows <= 0:
+            return
+
+        # ── Timestamp row ──────────────────────────────────────────────────────
+        if not entries:
+            self._draw_item(content_top, ContentLine([(A_DIM, "  No deferred commands in log.")]), cols, inner)
+            # draw ctrl
+            ctrl_sep = rows - ctrl_rows
+            self._draw_item(ctrl_sep, HLine(curses.ACS_LLCORNER, curses.ACS_LRCORNER), cols, inner)
+            for i, segs in enumerate(ctrl_lines):
+                self._draw_item(ctrl_sep + 1 + i, ContentLine(segs, bordered=False), cols, inner)
+            return
+
+        ts, cmd = entries[cursor]
+
+        # Timestamp on first content row
+        self._draw_item(content_top, ContentLine([(A_DIM, f"  {ts}")]), cols, inner)
+        body_top  = content_top + 1
+        body_rows = content_rows - 1
+        if body_rows <= 0:
+            return
+
+        # ── Command body (word-wrap each logical line, then scroll) ────────────
+        cmd_width = max(1, inner - 4)   # 2 spaces indent each side
+        body_lines: list[str] = []
+        for logical in cmd.split("\n"):
+            if not logical.strip():
+                body_lines.append("")
+                continue
+            wrapped = list(word_wrap(logical, cmd_width))
+            body_lines.extend(wrapped if wrapped else [""])
+
+        max_scroll        = max(0, len(body_lines) - body_rows)
+        self.deferlog_scroll = max(0, min(self.deferlog_scroll, max_scroll))
+        scroll = self.deferlog_scroll
+
+        self._draw_scroll_indicators(2, cols, scroll > 0, scroll < max_scroll)
+
+        EMPTY = ContentLine([])
+        visible = body_lines[scroll: scroll + body_rows]
+        for i in range(body_rows):
+            line = visible[i] if i < len(visible) else None
+            item = ContentLine([(A_NORMAL, f"  {line}")]) if line is not None else EMPTY
+            self._draw_item(body_top + i, item, cols, inner)
+
+        # ── Controls ───────────────────────────────────────────────────────────
+        ctrl_sep = rows - ctrl_rows
+        self._draw_item(ctrl_sep, HLine(curses.ACS_LLCORNER, curses.ACS_LRCORNER), cols, inner)
+        for i, segs in enumerate(ctrl_lines):
+            self._draw_item(ctrl_sep + 1 + i, ContentLine(segs, bordered=False), cols, inner)
+
+    def _deferlog_ctrl_lines(self, cols: int) -> list[list[tuple]]:
+        A_DIM = curses.A_DIM
+
+        res = self.deferlog_eval_result
+        lines = []
+
+        if res and res.get("running"):
+            lines.append([(A_DIM, "  evaluating…")])
+        elif res and not res.get("running"):
+            lines.extend(self._eval_result_lines(res, cols))
+
+        n = len(self.deferlog_entries)
+        nav = "  ·  [←/→] navigate" if n > 1 else ""
+        hint = f"  [e] eval  ·  [c] copy  ·  [r] reload{nav}  ·  [esc] close"
+        lines.append([(A_DIM, hint)])
+        return lines
 
     # ── Rendering ─────────────────────────────────────────────────────────────
 
@@ -2303,6 +2490,9 @@ class TUI:
             self._hide_cursor()
 
     def render(self):
+        if self.deferlog_open:
+            self._render_deferlog()
+            return
         if self.log_open:
             self._render_log()
             return
@@ -2449,6 +2639,57 @@ class TUI:
                 elif ev == curses.KEY_END:
                     self.log_scroll = 999999  # clamped in _draw_log_view
                     self.dirty = True
+                continue
+
+            # ── Deferlog view ─────────────────────────────────────────────────
+            if self.deferlog_open:
+                if ev == 27 or ev in (ord('q'), ord('Q')):
+                    self.deferlog_open = False
+                    self.deferlog_eval_result = None
+                    self._invalidate()
+                elif ev in (curses.KEY_UP, ord('k')):
+                    self.deferlog_scroll = max(0, self.deferlog_scroll - 1)
+                    self.dirty = True
+                elif ev in (curses.KEY_DOWN, ord('j')):
+                    self.deferlog_scroll += 1   # clamped in render
+                    self.dirty = True
+                elif ev == curses.KEY_PPAGE:
+                    self.deferlog_scroll = max(0, self.deferlog_scroll - max(1, (rows - 4) // 2))
+                    self.dirty = True
+                elif ev == curses.KEY_NPAGE:
+                    self.deferlog_scroll += max(1, (rows - 4) // 2)
+                    self.dirty = True
+                elif ev in (curses.KEY_LEFT, ord('h'), ord('p')) and self.deferlog_entries:
+                    # Previous = newer (lower index)
+                    if self.deferlog_cursor > 0:
+                        self.deferlog_cursor -= 1
+                        self.deferlog_scroll = 0
+                        self.deferlog_eval_result = None
+                        self._invalidate()
+                elif ev in (curses.KEY_RIGHT, ord('l'), ord('n')) and self.deferlog_entries:
+                    # Next = older (higher index)
+                    if self.deferlog_cursor < len(self.deferlog_entries) - 1:
+                        self.deferlog_cursor += 1
+                        self.deferlog_scroll = 0
+                        self.deferlog_eval_result = None
+                        self._invalidate()
+                elif ev in (ord('e'), ord('E')) and self.deferlog_entries:
+                    if not (self.deferlog_eval_result or {}).get("running"):
+                        _, cmd = self.deferlog_entries[self.deferlog_cursor]
+                        self._run_eval_async(cmd, 'deferlog_eval_result', highlight=False)
+                elif ev in (ord('c'), ord('C')) and self.deferlog_entries:
+                    _, cmd = self.deferlog_entries[self.deferlog_cursor]
+                    try:
+                        subprocess.run(["pbcopy"], input=cmd, text=True, timeout=3)
+                    except Exception:
+                        pass
+                elif ev in (ord('r'), ord('R')):
+                    self.deferlog_entries  = load_deferred_commands()
+                    self.deferlog_cursor   = min(self.deferlog_cursor,
+                                                 max(0, len(self.deferlog_entries) - 1))
+                    self.deferlog_scroll   = 0
+                    self.deferlog_eval_result = None
+                    self._invalidate()
                 continue
 
             # ── Rule detail view ──────────────────────────────────────────────
@@ -2742,6 +2983,13 @@ class TUI:
                     self.eval_open   = False
                     self.rec_open    = False
                     self._invalidate()
+            elif ev in (ord('d'), ord('D')):
+                self.deferlog_entries  = load_deferred_commands()
+                self.deferlog_cursor   = 0
+                self.deferlog_scroll   = 0
+                self.deferlog_eval_result = None
+                self.deferlog_open     = True
+                self._invalidate()
             elif ev in (ord('c'), ord('C')):
                 self.log_open    = True
                 self.log_scroll  = 0
