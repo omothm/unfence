@@ -778,7 +778,7 @@ ENGINE = PROJECT_DIR / "hooks" / "unfence.sh"
 
 def evaluate_command(cmd: str):
     """Run cmd through the full engine pipeline. Returns (verdict, rule_name | None, deferred_parts)."""
-    env = {**os.environ, "EVAL_MODE": "1", "CMD": cmd}
+    env = {**os.environ, "EVAL_MODE": "1", "CMD": cmd, "NO_LOG": "1"}
     try:
         r = subprocess.run(
             ["bash", str(ENGINE)], env=env,
@@ -1568,13 +1568,16 @@ class TUI:
             verdict, rule_name, deferred_parts = evaluate_command(cmd)
             with self._lock:
                 rules = list(self.rules)
-            rule_num = next((i + 1 for i, r in enumerate(rules) if r.name == rule_name), None)
+            # rule_name may be a chain like "0-unwrap.sh → 1-lists.sh"
+            rule_chain = [r.strip() for r in rule_name.split("→")] if rule_name else []
+            last_rule  = rule_chain[-1] if rule_chain else None
+            rule_num   = next((i + 1 for i, r in enumerate(rules) if r.name == last_rule), None)
             with self._lock:
                 setattr(self, result_attr, {"running": False, "verdict": verdict,
                                             "rule_name": rule_name, "rule_num": rule_num,
                                             "deferred_parts": deferred_parts})
                 if highlight:
-                    self.highlighted = rule_name
+                    self.highlighted = frozenset(rule_chain)
                     self.hi_verdict  = verdict
             if highlight and rule_num is not None:
                 self._scroll_to_rule(rule_num - 1)
@@ -2035,7 +2038,7 @@ class TUI:
             is_synced  = synced.get(name, False)
             n          = idx + 1
             is_last    = idx == len(rules) - 1
-            is_match   = name == highlighted
+            is_match   = name in highlighted if highlighted else False
             is_cursor  = (idx == cursor)
 
             title      = (cache or {}).get("title") or name

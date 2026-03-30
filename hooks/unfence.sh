@@ -159,8 +159,12 @@ tokenize() {
 # ── Rule pipeline ──────────────────────────────────────────────────────────────
 
 # Set by classify_single to the basename of the rule that gave the verdict.
+# For recurse: chains, contains all participating rules joined by " → ".
 # Empty if verdict was defer or came from a built-in check (empty cmd, etc.).
 _LAST_RULE=""
+# Set by classify_single to the verdict string (allow/deny/ask/defer).
+# Used by the recurse: handler to read the inner verdict without a subshell.
+_LAST_VERDICT=""
 
 # Run all rule files against a single, already-normalized command string.
 # Returns: allow | deny | ask | defer
@@ -169,6 +173,7 @@ classify_single() {
   local cmd="$1"
   local depth="${2:-0}"
   _LAST_RULE=""
+  _LAST_VERDICT=""
 
   if (( depth > MAX_RECURSE )); then
     log "  recursion limit ($MAX_RECURSE) hit for: $cmd"
@@ -219,12 +224,21 @@ classify_single() {
       allow|deny|ask)
         log "  -> $verdict  ($(basename "$rule_file"))"
         _LAST_RULE="$(basename "$rule_file")"
+        _LAST_VERDICT="$verdict"
         echo "$verdict"; return
         ;;
       recurse:*)
         local new_cmd="${verdict#recurse:}"
-        log "  -> recurse: $new_cmd  ($(basename "$rule_file"))"
+        local _recurse_rule="$(basename "$rule_file")"
+        log "  -> recurse: $new_cmd  ($_recurse_rule)"
+        # Direct function call (no subshell) — _LAST_RULE/_LAST_VERDICT propagate back
         classify_single "$new_cmd" $(( depth + 1 ))
+        # Emit a credit line so TUI log stats attribute this wrapper rule too
+        if [[ "$_LAST_VERDICT" == "allow" || "$_LAST_VERDICT" == "deny" ]]; then
+          log "  -> $_LAST_VERDICT  ($_recurse_rule)  [via recurse]"
+        fi
+        # Prepend wrapper to build the full rule chain (e.g. "0-unwrap.sh → 1-lists.sh")
+        _LAST_RULE="$_recurse_rule${_LAST_RULE:+ → $_LAST_RULE}"
         return
         ;;
       defer|"")
