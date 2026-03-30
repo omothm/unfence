@@ -165,6 +165,10 @@ _LAST_RULE=""
 # Set by classify_single to the verdict string (allow/deny/ask/defer).
 # Used by the recurse: handler to read the inner verdict without a subshell.
 _LAST_VERDICT=""
+# Set by classify_single to the deepest normalized command that failed to match.
+# For recurse: chains this is the unwrapped inner command, not the original surface form.
+# Used by EVAL_MODE to report the actual culprit rather than the whole top-level part.
+_LAST_DEFER_CMD=""
 
 # Run all rule files against a single, already-normalized command string.
 # Returns: allow | deny | ask | defer
@@ -174,9 +178,11 @@ classify_single() {
   local depth="${2:-0}"
   _LAST_RULE=""
   _LAST_VERDICT=""
+  _LAST_DEFER_CMD=""
 
   if (( depth > MAX_RECURSE )); then
     log "  recursion limit ($MAX_RECURSE) hit for: $cmd"
+    _LAST_DEFER_CMD="$cmd"
     echo "defer"; return
   fi
 
@@ -252,6 +258,7 @@ classify_single() {
   done
 
   log "  -> defer (no rule decided)"
+  _LAST_DEFER_CMD="$normalized"
   echo "defer"
 }
 
@@ -292,7 +299,7 @@ if [[ -n "$EVAL_MODE" ]]; then
       deny)  has_deny=true; all_allow=false; [[ -z "$deny_rule"  ]] && deny_rule="$r"  ;;
       ask)   has_ask=true;  all_allow=false; [[ -z "$ask_rule"   ]] && ask_rule="$r"   ;;
       allow) [[ -z "$allow_rule" ]] && allow_rule="$r" ;;
-      *)     all_allow=false; defer_parts+=("$part") ;;
+      *)     all_allow=false; defer_parts+=("${_LAST_DEFER_CMD:-$part}") ;;
     esac
   done < <(split_commands "$RAW_COMMAND")
   rm -f "$_vtmp"
