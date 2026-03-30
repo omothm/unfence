@@ -7,7 +7,10 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export ENGINE="$SCRIPT_DIR/hooks/unfence.sh"
-RULES_DIR="$SCRIPT_DIR/rules"
+# RULES_SUITE selects which rules directory to test (default: rules).
+# Export the resolved absolute path so the engine subprocess uses the same dir.
+RULES_DIR="$SCRIPT_DIR/${RULES_SUITE:-rules}"
+export UNFENCE_RULES_DIR="$RULES_DIR"
 export NO_LOG=1   # suppress engine log writes during tests; unset to debug
 
 export PASS=0

@@ -67,7 +67,10 @@ This writes the config JSON to a temp `.claude/unfence.json` and passes it as th
   ```bash
   bash ~/.claude/unfence/run-tests.sh
   ```
-- **After any change to sample-rules/, also run the sample test suite** by temporarily changing `RULES_DIR` in `run-tests.sh` and `RULES_DIR` in `hooks/unfence.sh` to point to `sample-rules/`, running `bash run-tests.sh`, then reverting both lines.
+- **After any change to sample-rules/, also run the sample test suite:**
+  ```bash
+  RULES_SUITE=sample-rules bash ~/.claude/unfence/run-tests.sh
+  ```
 - **Never proceed with further work if tests are failing.** Fix the issue first.
 
 ## Diagnosing Why a Command Isn't Auto-Accepted

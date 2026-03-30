@@ -13,7 +13,7 @@
 #
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RULES_DIR="$SCRIPT_DIR/../rules"
+RULES_DIR="${UNFENCE_RULES_DIR:-$SCRIPT_DIR/../rules}"
 LOG_FILE="$SCRIPT_DIR/../logs/unfence.log"
 SESSION_ID="${CLAUDE_SESSION_ID:-${PPID}}"
 MAX_RECURSE=10
