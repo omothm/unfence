@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Test runner for unfence.sh
 # Loads *.test.sh files from rules/ and runs them.
