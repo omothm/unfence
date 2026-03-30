@@ -52,6 +52,14 @@ run_test "description" 'command string' "expected_verdict"
 
 Where `expected_verdict` is one of: `allow`, `deny`, `defer` (note: `ask` rules produce `defer` from the engine's perspective since no JSON output is emitted).
 
+For rules that read `$PROJECT_CONFIG`, use `run_test_with_config` instead:
+
+```bash
+run_test_with_config "description" 'command string' "expected_verdict" '{"key": "value"}'
+```
+
+This writes the config JSON to a temp `.claude/unfence.json` and passes it as the `cwd` to the engine. Always include a `run_test` (no config) case to verify that missing config correctly produces `defer`.
+
 ### Requirements
 
 - **Every change to a rule file MUST be accompanied by corresponding test changes.** Adding a new pattern requires at least one positive and one negative test. Modifying behavior requires updating affected tests.
@@ -94,6 +102,25 @@ Key principles:
 ```bash
 python3 -m py_compile summary.py && echo OK
 ```
+
+## PROJECT_CONFIG Schema Conventions
+
+Rules that need project-specific configuration read `$PROJECT_CONFIG`, which is loaded from `.claude/unfence.json` in the project root. Follow these conventions when defining config keys:
+
+- **Top-level key = tool name** (full name, e.g. `salesforce`, `github` — not the CLI alias).
+- **Nested kebab-case** sub-keys, e.g. `salesforce["safe-orgs"]`, `github["safe-projects"]`.
+- **Name keys after the data they hold**, not the command that uses them. A list of safe org aliases is `safe-orgs`; a list of project entries is `safe-projects`. Never name a key after a subcommand (e.g. not `item-edit`).
+- **One entry, full identity.** Prefer a single array of richly-typed objects over parallel arrays keyed by lookup method. If a project can be identified by both a human-readable number and an opaque node ID, include both in the same object:
+  ```json
+  {
+    "github": {
+      "safe-projects": [
+        {"owner": "trilogy-group", "num": 452, "node-id": "PVT_kwDOAVNSds4AsebT"}
+      ]
+    }
+  }
+  ```
+  The rule then queries the same array differently depending on what the command exposes (`num`+`owner` for `item-add`, `node-id` for `item-edit`).
 
 ## Rule Count Discipline
 
