@@ -107,6 +107,13 @@ echo "════════════════════════�
 echo " unfence test suite"
 echo "═══════════════════════════════════════════════════════════════════"
 
+# Engine tests are rule-suite-independent — always run them first.
+if [[ -f "$SCRIPT_DIR/engine-tests.sh" ]]; then
+  _SECTIONS+=("${_SEQ}:engine")
+  # shellcheck disable=SC1091
+  source "$SCRIPT_DIR/engine-tests.sh"
+fi
+
 for test_file in $(ls "$RULES_DIR"/*.test.sh 2>/dev/null | sort); do
   [[ -f "$test_file" ]] || continue
   # Record section boundary: print header before the first test of this file

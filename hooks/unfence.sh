@@ -218,6 +218,14 @@ classify_single() {
   done
   [[ ${#TOKENS[@]} -eq 0 ]] && echo "allow" && return
 
+  # Brace group normalization: { cmd... } split on ; yields "{ cmd args" and "}".
+  # Neither is a command — strip the opener and allow the closer unconditionally.
+  [[ "${TOKENS[0]}" == "}" ]] && echo "allow" && return
+  if [[ "${TOKENS[0]}" == "{" ]]; then
+    TOKENS=("${TOKENS[@]:1}")
+    [[ ${#TOKENS[@]} -eq 0 ]] && echo "allow" && return  # lone {
+  fi
+
   local normalized="${TOKENS[*]}"
   log "  classify[$depth]: $normalized"
 
