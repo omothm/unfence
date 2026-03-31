@@ -275,6 +275,23 @@ def analyze_recommendations(deferred: dict, dismissed: set, on_proc=None) -> lis
         exs = "  |  ".join(info["examples"][:3])
         lines.append(f'  {info["count"]}x  {pattern}  e.g. "{exs}"')
 
+    # Build a compact view of current rule files so the model knows what is
+    # already handled and does not re-recommend those patterns.
+    rule_sections = []
+    for rule_path in sorted(RULES_DIR.glob("*.sh")):
+        if rule_path.name.endswith(".test.sh"):
+            continue
+        try:
+            rule_sections.append(f"### {rule_path.name}\n{rule_path.read_text()}")
+        except Exception:
+            pass
+    rules_block = (
+        "Current rule files (already handled — do NOT recommend any pattern "
+        "already covered by these rules):\n\n"
+        + "\n\n".join(rule_sections)
+        + "\n\n"
+    ) if rule_sections else ""
+
     prompt = (
         "You are analyzing bash commands that were deferred to a human prompt because no "
         "unfence rule matched them. Assess which patterns are safe to auto-approve.\n\n"
@@ -293,7 +310,8 @@ def analyze_recommendations(deferred: dict, dismissed: set, on_proc=None) -> lis
         "recommend: ask yourself 'if this prefix were auto-allowed with no further checks, "
         "what is the worst a malicious or mistaken command matching it could do?' "
         "If the answer is anything beyond harmless read-only introspection, drop it.\n\n"
-        "Commands (count × pattern  e.g. example):\n"
+        + rules_block
+        + "Commands (count × pattern  e.g. example):\n"
         + "\n".join(lines) + "\n\n"
         "PATTERN SPECIFICITY: Choose the most specific safe prefix — use the examples to "
         "determine the right depth. If all examples share the same subcommand (e.g. 'sf config get'), "

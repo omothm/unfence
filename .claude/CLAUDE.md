@@ -129,6 +129,8 @@ Rules that need project-specific configuration read `$PROJECT_CONFIG`, which is 
 
 For simple, self-contained fixes (e.g. a single-file change with an obvious, low-risk purpose), **automatically commit and push without asking for confirmation**. Use a concise commit message that describes the change. Do not ask "should I commit this?" — just do it.
 
+**Before committing, always check `git diff` for pre-existing uncommitted changes that belong to other agents.** Commit only your own changes. If unrelated changes are present, stash them first (`git stash`), commit your change, then restore the stash (`git stash pop`).
+
 ## Rule Count Discipline
 
 When a user requests a modification or addition of a rule, **first evaluate whether an existing rule is a better fit** for expansion or contraction. Suggest expanding an existing rule if it covers the same domain or command family — keep the total rule count lean. Only create a new rule file if the modification is genuinely distinct in logic or domain. After any change, automatically run `./summary.py` to show the updated state, highlighting what changed.
