@@ -1549,7 +1549,7 @@ class TUI:
         try:
             proc = subprocess.Popen(
                 ["claude", "--model", "claude-sonnet-4-6",
-                 "--setting-sources", "project,local",
+                 "--setting-sources", "user,project,local",
                  "--dangerously-skip-permissions",
                  "-n", name,
                  "-p", prompt],
