@@ -1919,9 +1919,10 @@ class TUI:
         A_BOLD   = curses.A_BOLD
         CP6      = curses.color_pair(6)
 
+        _rec_desc = "Commands seen in logs that may be safe to auto-allow."
         sep_row, content_start = self._begin_pane(
             rows, cols, inner, rec_rows, " Recommendations ",
-            description="Commands seen in logs that may be safe to auto-allow.")
+            description=_rec_desc)
 
         with self._lock:
             recs      = list(self.recs)
@@ -1933,6 +1934,15 @@ class TUI:
 
         scroll = self._rec_scroll  # row offset, already clamped by render()
         wrap_w = max(1, inner - 6)
+
+        _overhead     = self._pane_overhead(_rec_desc, inner)
+        _content_rows = max(1, rec_rows - _overhead)
+        _total        = sum(self._rec_item_rows(r, wrap_w) for r in visible) if visible else 0
+        self._draw_scroll_indicators(
+            content_start - 1, cols,
+            scroll > 0,
+            scroll + _content_rows < _total,
+        )
 
         CP8   = curses.color_pair(8)
         battr = CP8
@@ -2002,6 +2012,12 @@ class TUI:
                         break
                     self._draw_item(row, ContentLine([(A_DIM, f"     {rat_line}")]), cols, inner, border_attr=battr)
                     row += 1
+
+        # Fill any remaining content rows with bordered blank lines so the pane
+        # box is visually complete when fewer items are rendered than available rows.
+        while row < rows:
+            self._draw_item(row, ContentLine([], border_attr=battr), cols, inner, border_attr=battr)
+            row += 1
 
     # ── Pane helper ───────────────────────────────────────────────────────────
 
@@ -2822,20 +2838,30 @@ class TUI:
                 cursor    = self.rec_cursor
             visible = [r for r in recs if r["pattern"] not in dismissed]
             wrap_w  = max(1, inner - 6)
-            content_rows = rec_rows - 1  # subtract sep only (no hint row)
+            _rec_desc = "Commands seen in logs that may be safe to auto-allow."
+            content_rows = max(1, rec_rows - self._pane_overhead(_rec_desc, inner))
             # Build cumulative row offsets per rec index
             offsets = []
             acc = 0
             for r in visible:
                 offsets.append(acc)
                 acc += self._rec_item_rows(r, wrap_w)
-            # Scroll so cursor's first row is within [_rec_scroll, _rec_scroll+content_rows)
+            # Scroll so the entire cursor item is within [_rec_scroll, _rec_scroll+content_rows)
             if visible and cursor < len(offsets):
-                cur_off = offsets[cursor]
+                cur_off  = offsets[cursor]
+                cur_end  = cur_off + self._rec_item_rows(visible[cursor], wrap_w)
                 if cur_off < self._rec_scroll:
                     self._rec_scroll = cur_off
-                elif cur_off >= self._rec_scroll + content_rows:
-                    self._rec_scroll = cur_off - content_rows + self._rec_item_rows(visible[cursor], wrap_w)
+                elif cur_end > self._rec_scroll + content_rows:
+                    # Find first item boundary >= (cur_end - content_rows) so the
+                    # cursor item ends at or before the bottom of the visible area.
+                    target = max(0, cur_end - content_rows)
+                    new_scroll = 0
+                    for off in offsets:
+                        if off >= target:
+                            new_scroll = off
+                            break
+                    self._rec_scroll = new_scroll
             self._rec_scroll = max(0, self._rec_scroll)
 
         # Clamp eval scroll so cursor stays visible
