@@ -1352,8 +1352,8 @@ class TUI:
         """Token list for the detail view's normal navigation controls."""
         with self._lock:
             rules = list(self.rules)
-        tokens = (["[,/<] prev", "[./>] next"] if len(rules) > 1 else [])
-        return tokens + ["[x] (re-)generate", "[m] modify", "[D] delete", "[←/esc] back"]
+        tokens = (["[←] prev", "[→] next"] if len(rules) > 1 else [])
+        return tokens + ["[x] (re-)generate", "[m] modify", "[D] delete", "[enter/esc] back"]
 
     def _eval_ctrl_lines(self, cols: int) -> list[list[tuple]]:
         """Eval controls as a list of segs-lists (one entry per content row)."""
@@ -2299,16 +2299,22 @@ class TUI:
             lines.append(_sec("Recent Commands"))
             if recent:
                 lines.append([])
+                import textwrap as _tw
+                _prefix_w = 29  # len("  YYYY-MM-DD HH:MM  ▶ verb   ")
                 for r_ts, r_cmd, r_verdict in recent:
                     r_date   = r_ts[:10] if len(r_ts) >= 10 else r_ts
                     r_time   = r_ts[11:16] if len(r_ts) >= 16 else ""
                     v_attr   = CP6 | A_BOLD if r_verdict == "allow" else CP2 | A_BOLD
-                    cmd_segs = highlight_shell(r_cmd.split("\n")[0])
+                    cmd_text = " ".join(r_cmd.split())
+                    cmd_w    = max(10, wrap_w - _prefix_w)
+                    cmd_lines = (_tw.wrap(cmd_text, cmd_w) or [cmd_text])[:3]
                     lines.append([
                         (A_DIM,    f"  {r_date} {r_time}  "),
                         (v_attr,   f"▶ {r_verdict:<5}"),
                         (A_NORMAL, "  "),
-                    ] + cmd_segs)
+                    ] + highlight_shell(cmd_lines[0]))
+                    for cl in cmd_lines[1:]:
+                        lines.append([(A_NORMAL, " " * _prefix_w)] + highlight_shell(cl))
             else:
                 lines.append([])
                 lines.append([(A_DIM, "  No recent commands recorded.")])
@@ -2990,7 +2996,7 @@ class TUI:
 
                 if summarizing:
                     # Only allow going back; all other keys are no-ops
-                    if ev in (27, curses.KEY_LEFT):
+                    if ev in (27, curses.KEY_ENTER, 10, 13):
                         self.detail_open = False
                         self._invalidate()
                     continue
@@ -3042,11 +3048,11 @@ class TUI:
                     continue
 
                 # Normal detail navigation
-                if ev in (27, curses.KEY_LEFT):
+                if ev in (27, curses.KEY_ENTER, 10, 13):
                     self.detail_open = False
                     self._invalidate()
-                elif ev in (ord(','), ord('<'), ord('.'), ord('>')):
-                    delta = -1 if ev in (ord(','), ord('<')) else 1
+                elif ev in (curses.KEY_LEFT, curses.KEY_RIGHT):
+                    delta = -1 if ev == curses.KEY_LEFT else 1
                     self.detail_rule_idx = max(0, min(len(rules) - 1, self.detail_rule_idx + delta))
                     self.body_cursor     = self.detail_rule_idx
                     self.detail_scroll   = 0
