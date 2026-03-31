@@ -66,7 +66,9 @@ def summarize_rule(rule: Path):
         "purpose and enumerate its major command categories with representative examples from the actual list. "
         "Describe the matching algorithm (positional words, required flags, specificity scoring, tie-breaking). "
         "Cover any special logic (transparent flag stripping, recursion, sub-command checks). "
-        "Be complete — do not truncate or summarise away details. Aim for 8-15 sentences.\n\n"
+        "Be complete — do not truncate or summarise away details. Aim for 8-15 sentences. "
+        "Organize into logical paragraphs separated by blank lines (\\n\\n). "
+        "Use **bold** for key terms and `backticks` for command names, flags, and code.\n\n"
         + content
     )
     result = subprocess.run(
@@ -603,6 +605,24 @@ def word_wrap(text: str, width: int):
             current = word
     if current:
         yield current
+
+
+def parse_md(text: str, normal, bold_attr, code_attr):
+    """Parse **bold** and `code` spans; return list of (attr, str) segments."""
+    import re
+    segments = []
+    last = 0
+    for m in re.finditer(r'\*\*(.+?)\*\*|`([^`]+)`', text):
+        if m.start() > last:
+            segments.append((normal, text[last:m.start()]))
+        if m.group(1) is not None:
+            segments.append((bold_attr, m.group(1)))
+        else:
+            segments.append((code_attr, m.group(2)))
+        last = m.end()
+    if last < len(text):
+        segments.append((normal, text[last:]))
+    return segments or [(normal, text)]
 
 
 # ── Deferlog syntax highlighting ──────────────────────────────────────────────
@@ -2290,6 +2310,7 @@ class TUI:
         A_NORMAL = curses.A_NORMAL
         A_DIM    = curses.A_DIM
         A_BOLD   = curses.A_BOLD
+        CP1 = curses.color_pair(1)
         CP2 = curses.color_pair(2)
         CP4 = curses.color_pair(4)
         CP6 = curses.color_pair(6)
@@ -2363,8 +2384,12 @@ class TUI:
         elif summarizing:
             lines.append([(CP4 | A_BOLD, "  Summarizing, please wait…")])
         elif desc:
-            for wl in word_wrap(desc, wrap_w):
-                lines.append([(A_NORMAL, f"  {wl}")])
+            for i, para in enumerate(desc.split("\n\n")):
+                if i:
+                    lines.append([])
+                for wl in word_wrap(para, wrap_w):
+                    segs = parse_md(wl, A_NORMAL, CP1 | A_BOLD, CP4)
+                    lines.append([(segs[0][0], "  " + segs[0][1])] + segs[1:])
         elif summary:
             lines.append([(A_DIM, "  (no long description — press [x] to generate)")])
             lines.append([])
