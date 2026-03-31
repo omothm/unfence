@@ -106,6 +106,25 @@ Key principles:
 python3 -m py_compile summary.py && echo OK
 ```
 
+## TUI Safe Rendering Patterns
+
+Font glyph width bugs are invisible in tmux captures but visible in the user's terminal.
+When writing line-drawing or fill code in `summary.py`:
+
+- **Never** use `addstr("─" * n)` or similar Unicode box-drawing char repetition for fills.
+  Use `stdscr.hline(row, col, curses.ACS_HLINE, n, attr)` instead.
+- **Never** use `addstr("│")` / `addstr("─")` for border characters.
+  Use `addch(curses.ACS_VLINE)` / `addch(curses.ACS_HLINE)`.
+- **Never** track display columns with `col += len(text)` when `text` contains
+  Unicode line-drawing chars (U+2500–U+257F). Use absolute column positions or
+  restrict `len()`-based tracking to pure-ASCII strings.
+- For section headers with a labeled fill, use the `SecLine` layout object —
+  `_draw_item` renders it entirely via `hline(ACS_HLINE)`, which is always correct.
+
+**Rationale:** Python `len()` counts code points; ncurses counts display columns via
+`wcwidth`. These diverge for box-drawing chars on some fonts, causing `addstr` to
+silently clip or fail. ACS functions let ncurses own all column accounting.
+
 ## PROJECT_CONFIG Schema Conventions
 
 Rules that need project-specific configuration read `$PROJECT_CONFIG`, which is loaded from `.claude/unfence.json` in the project root. Follow these conventions when defining config keys:

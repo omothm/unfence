@@ -154,6 +154,25 @@ tmux send-keys -t unfence-tui "q" ""   # quit
 | `q` | Quit |
 | `" "` (space) | Scroll down in detail/deferlog view |
 
+## Safe Rendering Patterns for summary.py
+
+Font glyph width bugs are **invisible in tmux but visible in Ghostty**. Follow these
+rules when writing any line-drawing or fill code in `summary.py`:
+
+| Task | ❌ Avoid | ✅ Use instead |
+|------|----------|----------------|
+| Horizontal fill / separator | `addstr("─" * n)` | `stdscr.hline(row, col, ACS_HLINE, n, attr)` |
+| Box border drawing | `addstr("│")` / `addstr("─")` | `addch(ACS_VLINE)` / `addch(ACS_HLINE)` |
+| Column tracking after addstr | `col += len(text)` (when text has Unicode line-drawing chars) | Track only pure-ASCII text with `len()`; use absolute column positions for fills |
+| Section header fill | compute fill string, append as ContentLine seg | Use `SecLine` item type — drawn via `hline(ACS_HLINE)` in `_draw_item` |
+
+**Why:** Python's `len()` counts Unicode code points. ncurses counts display columns via
+`wcwidth`. For pure-ASCII text these agree. For box-drawing chars (U+2500–U+257F), they
+may disagree if the terminal's font renders them wider than one column. When they
+disagree, `addstr` clips or raises silently, and tmux (which has its own width model)
+shows no problem. Use `hline`/`addch` with ACS constants — ncurses owns the column
+accounting entirely and the terminal's own rendering is always in sync.
+
 ## Why tmux over `expect`
 
 `expect` only sees what the TUI *writes* (escape sequences). If curses's differential
