@@ -720,33 +720,39 @@ def wrap_token_line(segs: list, width: int) -> list:
     except Exception:
         return [segs]
 
-def scan_multiline_string_lines(cmd: str) -> set:
+def scan_multiline_string_lines(cmd: str) -> tuple:
     """
-    Return set of line indices (0-based) that are entirely inside a
-    multi-line quoted string (single or double).  The opening line
-    (which starts the unclosed quote) and the closing line (bare quote)
-    are NOT included; only the body lines in between are.
+    Return (body, closings) where:
+    - body: set of line indices (0-based) that are entirely inside a
+      multi-line quoted string (single or double).
+    - closings: dict mapping line_idx → column of the closing quote on
+      lines that terminate a multi-line string.  The prefix up to and
+      including that column is string content; everything after is shell.
+    The opening line (which starts the unclosed quote) is in neither set.
     """
     lines     = cmd.split("\n")
-    body      = set()
+    body: set  = set()
+    closings: dict = {}
     in_string = None   # '"' or "'" when inside an unclosed string
     for i, line in enumerate(lines):
         if in_string:
             # Scan for the closing quote, honouring backslash escapes
-            j, closed = 0, False
+            j, closed, close_col = 0, False, -1
             while j < len(line):
                 c = line[j]
                 if c == '\\':
                     j += 2
                     continue
                 if c == in_string:
-                    closed = True
-                    in_string = None
+                    closed     = True
+                    close_col  = j
+                    in_string  = None
                     break
                 j += 1
-            if not closed:
+            if closed:
+                closings[i] = close_col
+            else:
                 body.add(i)
-            # closing line: not added to body
         else:
             # Look for an unclosed opening quote on this line
             j = 0
@@ -772,7 +778,7 @@ def scan_multiline_string_lines(cmd: str) -> set:
                         in_string = quote
                         break
                 j += 1
-    return body
+    return body, closings
 
 
 def scan_heredoc_body_lines(cmd: str) -> set:
@@ -2612,8 +2618,8 @@ class TUI:
         # ── Command body (tokenize → wrap → scroll) ────────────────────────  [SH]
         cmd_width      = max(1, inner - 4)   # 2 spaces indent each side
         body_lines: list = []                # list of list[(attr, text)]   [SH]
-        heredoc_bodies = scan_heredoc_body_lines(cmd)                       # [SH]
-        string_bodies  = scan_multiline_string_lines(cmd)                  # [SH]
+        heredoc_bodies                = scan_heredoc_body_lines(cmd)        # [SH]
+        string_bodies, str_closings   = scan_multiline_string_lines(cmd)   # [SH]
         for line_idx, logical in enumerate(cmd.split("\n")):                # [SH]
             if not logical.strip():
                 body_lines.append([])
@@ -2624,6 +2630,18 @@ class TUI:
                 for w in logical.split():                                   # [SH]
                     if segs: segs.append((curses.A_NORMAL, ' '))            # [SH]
                     segs.append((_sh_attr("yellow"), w))                    # [SH]
+                wrapped = wrap_token_line(                                  # [SH]
+                    segs or [(curses.A_NORMAL, logical)], cmd_width)        # [SH]
+            elif line_idx in str_closings:                                  # [SH]
+                # Closing line: yellow prefix (up to+incl closing quote),  # [SH]
+                # then highlight_shell on the remainder so shell code after # [SH]
+                # the quote is not mistakenly coloured as string content.   # [SH]
+                close_col = str_closings[line_idx]                          # [SH]
+                prefix    = logical[:close_col + 1]                         # [SH]
+                suffix    = logical[close_col + 1:]                         # [SH]
+                segs      = [(_sh_attr("yellow"), prefix)] if prefix else []# [SH]
+                if suffix:                                                  # [SH]
+                    segs.extend(highlight_shell(suffix))                    # [SH]
                 wrapped = wrap_token_line(                                  # [SH]
                     segs or [(curses.A_NORMAL, logical)], cmd_width)        # [SH]
             else:
