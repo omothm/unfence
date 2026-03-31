@@ -144,6 +144,10 @@ Rules that need project-specific configuration read `$PROJECT_CONFIG`, which is 
   ```
   The rule then queries the same array differently depending on what the command exposes (`num`+`owner` for `item-add`, `node-id` for `item-edit`).
 
+## Git Tracking
+
+The `rules/` directory files are **not tracked by git** (only a `.gitkeep` is committed). Changes to rule files take effect immediately on disk — there is nothing to commit or push after editing them.
+
 ## Commit and Push Policy
 
 For simple, self-contained fixes (e.g. a single-file change with an obvious, low-risk purpose), **automatically commit and push without asking for confirmation**. Use a concise commit message that describes the change. Do not ask "should I commit this?" — just do it.
