@@ -232,7 +232,7 @@ classify_single() {
   # ── Run rules in sorted order ──────────────────────────────────────────────
   for rule_file in "${RULE_FILES[@]}"; do
     local verdict
-    verdict=$(COMMAND="$normalized" PROJECT_CONFIG="$PROJECT_CONFIG" source "$rule_file" 2>/dev/null)
+    verdict=$(COMMAND="$normalized" PROJECT_CONFIG="$PROJECT_CONFIG" COMMAND_CWD="$SESSION_CWD" source "$rule_file" 2>/dev/null)
 
     case "$verdict" in
       allow|deny|ask)

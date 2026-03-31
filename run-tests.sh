@@ -103,6 +103,37 @@ run_test_with_config() {
 }
 export -f run_test_with_config
 
+# run_test_with_cwd "desc" "cmd" "expected" "/path/to/cwd"
+# Like run_test but passes an explicit cwd to the engine (no config file needed).
+run_test_with_cwd() {
+  local description="$1" command="$2" expected="$3" cwd="$4"
+  local seq=$(( ++_SEQ ))
+  (( TOTAL++ ))
+
+  if (( _ACTIVE >= _MAX_PARALLEL )); then
+    wait -n 2>/dev/null
+    (( _ACTIVE-- ))
+  fi
+
+  local result_file="$_TMPDIR/$seq"
+  (
+    local json output actual
+    json=$(jq -n --arg cmd "$command" --arg cwd "$cwd" \
+      '{"tool_input":{"command":$cmd},"cwd":$cwd}')
+    output=$(bash "$ENGINE" <<< "$json" 2>/dev/null)
+    actual=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<< "$output" 2>/dev/null)
+    [[ -z "$actual" ]] && actual="defer"
+
+    if [[ "$actual" == "$expected" ]]; then
+      printf 'P\t%s\t%s\n' "$description" "$expected" > "$result_file"
+    else
+      printf 'F\t%s\t%s\t%s\n' "$description" "$expected" "$actual" > "$result_file"
+    fi
+  ) &
+  (( _ACTIVE++ ))
+}
+export -f run_test_with_cwd
+
 echo "═══════════════════════════════════════════════════════════════════"
 echo " unfence test suite"
 echo "═══════════════════════════════════════════════════════════════════"
