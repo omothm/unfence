@@ -532,6 +532,57 @@ def load_log_stats() -> dict:
     return counts
 
 
+def load_recent_rule_matches(rule_name: str, limit: int = 3) -> list[tuple[str, str, str]]:
+    """Return up to `limit` (timestamp, command, verdict) tuples for commands
+    matched by `rule_name` with a final allow or deny compound verdict, newest first."""
+    import datetime
+    log_file = PROJECT_DIR / "logs" / "unfence.log"
+    if not log_file.exists():
+        return []
+
+    LOG_RE = re.compile(r'^\[([^\]]+)\] \[(\d+)\] (.+)$')
+    cutoff  = (datetime.date.today() - datetime.timedelta(days=30)).isoformat()
+
+    pid_ts:      dict[str, str] = {}   # pid -> timestamp of INPUT
+    pid_cmd:     dict[str, str] = {}   # pid -> command string
+    pid_matched: dict[str, str] = {}   # pid -> "allow" or "deny" from rule match
+    results: list[tuple[str, str, str]] = []
+
+    try:
+        with log_file.open(errors="replace") as fh:
+            for raw in fh:
+                line = raw.rstrip("\n")
+                if len(line) < 12 or line[1:11] < cutoff:
+                    continue
+                m = LOG_RE.match(line)
+                if not m:
+                    continue
+                ts, pid, rest = m.group(1), m.group(2), m.group(3)
+
+                if rest.startswith("INPUT "):
+                    pid_ts[pid]  = ts
+                    pid_cmd[pid] = rest[6:]
+                    pid_matched.pop(pid, None)
+                elif '-> allow' in rest or '-> deny' in rest:
+                    ob = rest.find('(')
+                    cb = rest.find(')', ob) if ob >= 0 else -1
+                    if ob >= 0 and cb > ob and rest[ob + 1:cb] == rule_name:
+                        pid_matched[pid] = "allow" if '-> allow' in rest else "deny"
+                elif rest.startswith('=> ') and pid in pid_matched and pid in pid_cmd:
+                    for v in ('allow', 'deny'):
+                        if f'=> {v}' in rest:
+                            results.append((pid_ts.get(pid, ts), pid_cmd[pid], v))
+                            break
+                    pid_cmd.pop(pid, None)
+                    pid_matched.pop(pid, None)
+                    pid_ts.pop(pid, None)
+    except OSError:
+        pass
+
+    results.reverse()
+    return results[:limit]
+
+
 def word_wrap(text: str, width: int):
     words = text.split()
     current = ""
@@ -831,6 +882,13 @@ class ContentLine:
         self.segs        = segs
         self.bordered    = bordered
         self.border_attr = border_attr  # if set, overrides default attr for │ chars
+
+class SecLine:
+    """Section header: '  ── {label} ' followed by ACS_HLINE fill to right border."""
+    __slots__ = ("label", "attr")
+    def __init__(self, label: str, attr: int):
+        self.label = label
+        self.attr  = attr
 
 
 # ── Terminal protocol helpers ─────────────────────────────────────────────────
@@ -2137,7 +2195,7 @@ class TUI:
         rows, cols = self.stdscr.getmaxyx()
         inner      = cols - 2
         ctrl_rows  = self._ctrl_rows(inner)
-        self.stdscr.erase()
+        self.stdscr.clear()
         self._draw_detail_view(rows, cols, inner, ctrl_rows)
         self._draw_controls(rows, cols, inner, ctrl_rows)
         self._apply_cursor()
@@ -2231,12 +2289,35 @@ class TUI:
         else:
             lines.append([(A_DIM, "  (no description — press [x] to generate)")])
 
-        # ── Change log for this rule ──────────────────────────────────────────
+        # ── Recent commands + change log ─────────────────────────────────────────
         if not detail_modifying and not summarizing:
+            def _sec(label: str) -> SecLine:
+                return SecLine(label, A_DIM | A_BOLD)
+
+            recent = load_recent_rule_matches(name)
+            lines.append([])
+            lines.append(_sec("Recent Commands"))
+            if recent:
+                lines.append([])
+                for r_ts, r_cmd, r_verdict in recent:
+                    r_date   = r_ts[:10] if len(r_ts) >= 10 else r_ts
+                    r_time   = r_ts[11:16] if len(r_ts) >= 16 else ""
+                    v_attr   = CP6 | A_BOLD if r_verdict == "allow" else CP2 | A_BOLD
+                    cmd_segs = highlight_shell(r_cmd.split("\n")[0])
+                    lines.append([
+                        (A_DIM,    f"  {r_date} {r_time}  "),
+                        (v_attr,   f"▶ {r_verdict:<5}"),
+                        (A_NORMAL, "  "),
+                    ] + cmd_segs)
+            else:
+                lines.append([])
+                lines.append([(A_DIM, "  No recent commands recorded.")])
+
             changes = load_change_log(name)
             lines.append([])
-            lines.append([(A_DIM | A_BOLD, "  Changes")])
+            lines.append(_sec("Changes"))
             if changes:
+                lines.append([])
                 for entry in changes[:30]:
                     ts       = entry.get("ts", "")
                     src      = entry.get("source", "?")
@@ -2253,6 +2334,7 @@ class TUI:
                         (A_NORMAL,           f"  {msg}"),
                     ])
             else:
+                lines.append([])
                 lines.append([(A_DIM, "  No changes recorded.")])
 
         # Scroll clamping
@@ -2273,7 +2355,12 @@ class TUI:
         EMPTY = ContentLine([])
         visible = lines[self.detail_scroll: self.detail_scroll + content_rows]
         for i in range(content_rows):
-            row_item = ContentLine(visible[i]) if i < len(visible) else EMPTY
+            if i >= len(visible):
+                row_item = EMPTY
+            elif isinstance(visible[i], SecLine):
+                row_item = visible[i]
+            else:
+                row_item = ContentLine(visible[i])
             self._draw_item(content_top + i, row_item, cols, inner)
 
     # ── Change log view ───────────────────────────────────────────────────────
@@ -2601,6 +2688,28 @@ class TUI:
             try: self.stdscr.hline(srow, 1, curses.ACS_HLINE, inner, battr)
             except curses.error: pass
             safe_addch(srow, cols - 1, item.rch, battr)
+        elif isinstance(item, SecLine):
+            # Section header: "  ── {label} " + ACS_HLINE fill + border
+            # Use hline for all line-drawing to avoid double-width char issues
+            safe_addch(srow, 0, curses.ACS_VLINE, curses.A_NORMAL)
+            safe_addch(srow, cols - 1, curses.ACS_VLINE, curses.A_NORMAL)
+            # "  " indent
+            try: self.stdscr.addstr(srow, 1, "  ", item.attr)
+            except curses.error: pass
+            # leading "──" via hline (2 ACS_HLINE chars, guaranteed 1-col each)
+            try: self.stdscr.hline(srow, 3, curses.ACS_HLINE, 2, item.attr)
+            except curses.error: pass
+            # " {label} " — pure ASCII
+            label_str = f" {item.label} "
+            label_start = 5
+            try: self.stdscr.addstr(srow, label_start, label_str, item.attr)
+            except curses.error: pass
+            # fill from end of label to right border
+            fill_start = label_start + len(label_str)
+            fill_cols  = max(0, (cols - 1) - fill_start)
+            if fill_cols > 0:
+                try: self.stdscr.hline(srow, fill_start, curses.ACS_HLINE, fill_cols, item.attr)
+                except curses.error: pass
         else:
             battr = (item.border_attr if item.border_attr is not None
                      else border_attr if border_attr is not None
