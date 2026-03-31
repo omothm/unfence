@@ -720,6 +720,61 @@ def wrap_token_line(segs: list, width: int) -> list:
     except Exception:
         return [segs]
 
+def scan_multiline_string_lines(cmd: str) -> set:
+    """
+    Return set of line indices (0-based) that are entirely inside a
+    multi-line quoted string (single or double).  The opening line
+    (which starts the unclosed quote) and the closing line (bare quote)
+    are NOT included; only the body lines in between are.
+    """
+    lines     = cmd.split("\n")
+    body      = set()
+    in_string = None   # '"' or "'" when inside an unclosed string
+    for i, line in enumerate(lines):
+        if in_string:
+            # Scan for the closing quote, honouring backslash escapes
+            j, closed = 0, False
+            while j < len(line):
+                c = line[j]
+                if c == '\\':
+                    j += 2
+                    continue
+                if c == in_string:
+                    closed = True
+                    in_string = None
+                    break
+                j += 1
+            if not closed:
+                body.add(i)
+            # closing line: not added to body
+        else:
+            # Look for an unclosed opening quote on this line
+            j = 0
+            while j < len(line):
+                c = line[j]
+                if c == '\\':
+                    j += 2
+                    continue
+                if c in ('"', "'"):
+                    quote = c
+                    j += 1
+                    closed = False
+                    while j < len(line):
+                        c2 = line[j]
+                        if c2 == '\\':
+                            j += 2
+                            continue
+                        if c2 == quote:
+                            closed = True
+                            break
+                        j += 1
+                    if not closed:
+                        in_string = quote
+                        break
+                j += 1
+    return body
+
+
 def scan_heredoc_body_lines(cmd: str) -> set:
     """
     Return set of line indices (0-based) that are heredoc body lines.
@@ -2558,12 +2613,13 @@ class TUI:
         cmd_width      = max(1, inner - 4)   # 2 spaces indent each side
         body_lines: list = []                # list of list[(attr, text)]   [SH]
         heredoc_bodies = scan_heredoc_body_lines(cmd)                       # [SH]
+        string_bodies  = scan_multiline_string_lines(cmd)                  # [SH]
         for line_idx, logical in enumerate(cmd.split("\n")):                # [SH]
             if not logical.strip():
                 body_lines.append([])
                 continue
-            if line_idx in heredoc_bodies:                                  # [SH]
-                # Heredoc body line — render as yellow string content       [SH]
+            if line_idx in heredoc_bodies or line_idx in string_bodies:     # [SH]
+                # String body line — render as yellow content               [SH]
                 segs = []                                                   # [SH]
                 for w in logical.split():                                   # [SH]
                     if segs: segs.append((curses.A_NORMAL, ' '))            # [SH]
