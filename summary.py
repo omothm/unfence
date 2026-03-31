@@ -545,7 +545,8 @@ def load_recent_rule_matches(rule_name: str, limit: int = 3) -> list[tuple[str, 
 
     pid_ts:      dict[str, str] = {}   # pid -> timestamp of INPUT
     pid_cmd:     dict[str, str] = {}   # pid -> command string
-    pid_matched: dict[str, str] = {}   # pid -> "allow" or "deny" from rule match
+    pid_subcmd:  dict[str, str] = {}   # pid -> last classify[0] sub-command seen
+    pid_matched: dict[str, str] = {}   # pid -> matched sub-command for this rule
     results: list[tuple[str, str, str]] = []
 
     try:
@@ -562,18 +563,24 @@ def load_recent_rule_matches(rule_name: str, limit: int = 3) -> list[tuple[str, 
                 if rest.startswith("INPUT "):
                     pid_ts[pid]  = ts
                     pid_cmd[pid] = rest[6:]
+                    pid_subcmd.pop(pid, None)
                     pid_matched.pop(pid, None)
+                elif rest.startswith("  classify[0]: "):
+                    pid_subcmd[pid] = rest[len("  classify[0]: "):]
                 elif '-> allow' in rest or '-> deny' in rest:
                     ob = rest.find('(')
                     cb = rest.find(')', ob) if ob >= 0 else -1
                     if ob >= 0 and cb > ob and rest[ob + 1:cb] == rule_name:
+                        # Store the sub-command that actually matched, not the full compound input
                         pid_matched[pid] = "allow" if '-> allow' in rest else "deny"
+                        pid_cmd[pid] = pid_subcmd.get(pid, pid_cmd.get(pid, ""))
                 elif rest.startswith('=> ') and pid in pid_matched and pid in pid_cmd:
                     for v in ('allow', 'deny'):
                         if f'=> {v}' in rest:
                             results.append((pid_ts.get(pid, ts), pid_cmd[pid], v))
                             break
                     pid_cmd.pop(pid, None)
+                    pid_subcmd.pop(pid, None)
                     pid_matched.pop(pid, None)
                     pid_ts.pop(pid, None)
     except OSError:
