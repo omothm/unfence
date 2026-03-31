@@ -402,11 +402,15 @@ def rec_cache_stale() -> bool:
 
 
 def load_deferred_commands() -> list[tuple[str, str]]:
-    """Parse the unfence log and return (timestamp, command) for deferred sessions, newest first."""
+    """Parse the unfence log and return (timestamp, command) for deferred sessions
+    from the last 30 days, newest first."""
+    import datetime
     log_file = PROJECT_DIR / "logs" / "unfence.log"
     if not log_file.exists():
         return []
+    cutoff = datetime.datetime.now() - datetime.timedelta(days=30)
     LOG_RE = re.compile(r'^\[([^\]]+)\] \[(\d+)\] (.+)$')
+    TS_FMT = "%Y-%m-%d %H:%M:%S"
     pid_input: dict[str, tuple[str, str]] = {}   # pid -> (ts, command)
     results: list[tuple[str, str]] = []
     cur_pid: str | None = None
@@ -430,6 +434,11 @@ def load_deferred_commands() -> list[tuple[str, str]]:
                 if m:
                     _flush()
                     cur_ts, cur_pid, cur_lines = m.group(1), m.group(2), [m.group(3)]
+                    try:
+                        if datetime.datetime.strptime(cur_ts, TS_FMT) < cutoff:
+                            cur_pid = None  # skip entries older than 30 days
+                    except ValueError:
+                        pass
                 else:
                     cur_lines.append(line)
         _flush()
@@ -2380,7 +2389,7 @@ class TUI:
             self.stdscr.addstr(0, max(1, cols - len(count_str) - 1), count_str, A_DIM)
         except curses.error:
             pass
-        self._draw_item(1, ContentLine([(A_DIM, "  Commands with no matching rule (true gaps) — newest first.")]), cols, inner)
+        self._draw_item(1, ContentLine([(A_DIM, "  Commands with no matching rule (true gaps) — last 30 days, newest first.")]), cols, inner)
         self._draw_item(2, HLine(curses.ACS_LTEE, curses.ACS_RTEE), cols, inner)
 
         # ── Ctrl rows at bottom ────────────────────────────────────────────────
