@@ -35,12 +35,23 @@ FAIL=0
 # ── Lifecycle ──────────────────────────────────────────────────────────────────
 
 tui_start() {
-    # Use explicit dimensions (-x W -y H); without them tmux defaults to 80×24
-    # which can truncate wide content. Omitting dimensions is a common gotcha.
+    # No explicit dimensions: uses the current terminal size.
+    # Use tui_start_sized when a specific size is required (e.g. to force scroll overflow).
     tmux new-session -d -s "$SESSION" \
         "python3 $TUI_SCRIPT" 2>/dev/null \
         || { echo "ERROR: could not create tmux session" >&2; exit 1; }
     sleep 2  # TUI renders asynchronously; wait for initial paint
+}
+
+# tui_start_sized W H — start TUI in a tmux pane of exactly W×H characters.
+# Use when a test depends on terminal dimensions, e.g. to guarantee content
+# overflows the viewport so scroll behavior can be exercised.
+tui_start_sized() {
+    local width="${1:-80}" height="${2:-24}"
+    tmux new-session -d -s "$SESSION" -x "$width" -y "$height" \
+        "python3 $TUI_SCRIPT" 2>/dev/null \
+        || { echo "ERROR: could not create tmux session" >&2; exit 1; }
+    sleep 2
 }
 
 tui_stop() {
@@ -146,6 +157,27 @@ PYEOF
 
 # tui_ctrl_line — print the bottom control/status line(s)
 tui_ctrl_line() { tui_capture | tail -2; }
+
+# tui_assert_ctrl LABEL PATTERN — assert PATTERN appears in the ctrl line(s) only.
+# Prefer this over tui_assert_screen when a pattern could appear in body content.
+tui_assert_ctrl() {
+    local label="$1" pattern="$2"
+    if tui_ctrl_line | grep -q "$pattern"; then
+        tui_pass "$label"
+    else
+        tui_fail "$label (pattern '$pattern' not in ctrl line: $(tui_ctrl_line | tr '\n' '|'))"
+    fi
+}
+
+# tui_assert_ctrl_not LABEL PATTERN — assert PATTERN is absent from the ctrl line(s).
+tui_assert_ctrl_not() {
+    local label="$1" pattern="$2"
+    if ! tui_ctrl_line | grep -q "$pattern"; then
+        tui_pass "$label"
+    else
+        tui_fail "$label (pattern '$pattern' unexpectedly in ctrl line: $(tui_ctrl_line | tr '\n' '|'))"
+    fi
+}
 
 # tui_grep PATTERN — grep the screen for PATTERN, empty string on no match
 tui_grep() { tui_capture | grep -o "$1" || echo ""; }
