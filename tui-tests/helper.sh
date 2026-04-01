@@ -122,7 +122,7 @@ tui_start() {
     tmux new-session -d -s "$SESSION" \
         "env UNFENCE_RULES_DIR='$_TUI_FIXTURE_DIR/rules' UNFENCE_CACHE_DIR='$_TUI_FIXTURE_DIR/cache' python3 $TUI_SCRIPT" 2>/dev/null \
         || { echo "ERROR: could not create tmux session" >&2; exit 1; }
-    tui_wait_for_ctrl "navigate" 50 \
+    tui_wait_for "navigate" 50 \
         || { echo "ERROR: TUI did not render initial view within 5s" >&2; exit 1; }
 }
 
@@ -135,7 +135,10 @@ tui_start_sized() {
     tmux new-session -d -s "$SESSION" -x "$width" -y "$height" \
         "env UNFENCE_RULES_DIR='$_TUI_FIXTURE_DIR/rules' UNFENCE_CACHE_DIR='$_TUI_FIXTURE_DIR/cache' python3 $TUI_SCRIPT" 2>/dev/null \
         || { echo "ERROR: could not create tmux session" >&2; exit 1; }
-    tui_wait_for_ctrl "navigate" 50 \
+    # Use tui_wait_for (full screen) rather than tui_wait_for_ctrl (last 2 lines)
+    # because at narrow widths the ctrl block can wrap to many rows, pushing
+    # "navigate" above the last 2 lines that tui_ctrl_line captures.
+    tui_wait_for "navigate" 50 \
         || { echo "ERROR: TUI did not render initial view within 5s" >&2; exit 1; }
 }
 

@@ -740,6 +740,41 @@ def wrap_token_line(segs: list, width: int) -> list:
     except Exception:
         return [segs]
 
+def _wrap_segs(segs: list, width: int, indent_width: int = 0) -> list:
+    """
+    Pack (attr, text) segments into display lines no wider than *width*,
+    breaking at segment boundaries (never mid-segment).  Returns a list of
+    seg-lists; each seg-list represents one display line.  Continuation lines
+    are prefixed with *indent_width* A_NORMAL (0) spaces.
+    """
+    if not segs:
+        return [[]]
+    total = sum(len(t) for _, t in segs)
+    if total <= width:
+        return [list(segs)]
+    lines, cur, cur_len = [], [], 0
+    for attr, text in segs:
+        seg_len = len(text)
+        if not seg_len:
+            continue  # skip empty segments
+        if not cur:
+            cur.append((attr, text))
+            cur_len = seg_len
+        elif cur_len + seg_len <= width:
+            cur.append((attr, text))
+            cur_len += seg_len
+        else:
+            lines.append(cur)
+            if indent_width:
+                cur = [(0, " " * indent_width), (attr, text)]
+                cur_len = indent_width + seg_len
+            else:
+                cur = [(attr, text)]
+                cur_len = seg_len
+    if cur:
+        lines.append(cur)
+    return lines if lines else [[]]
+
 def scan_multiline_string_lines(cmd: str) -> tuple:
     """
     Return (body, closings) where:
@@ -2182,11 +2217,12 @@ class TUI:
             (A_DIM,          autonomy_str),
         ], bordered=False)
 
-        return [
-            title_row,
-            stats_row,
-            HLine(curses.ACS_ULCORNER, curses.ACS_URCORNER),  # body box top
+        # stats_row is unbordered so it has `cols` (= inner+2) chars available.
+        stats_lines = [
+            ContentLine(sl, bordered=False)
+            for sl in _wrap_segs(stats_row.segs, inner + 2, indent_width=6)
         ]
+        return [title_row] + stats_lines + [HLine(curses.ACS_ULCORNER, curses.ACS_URCORNER)]
 
     def _build_body(self, inner: int, cursor: int = -1):
         A_NORMAL = curses.A_NORMAL
@@ -2262,11 +2298,13 @@ class TUI:
                 # Rule exists but was never hit in the last 30 days
                 badge_segs += [(A_NORMAL, " "), (A_DIM, "[0|0]")]
 
-            body.append(ContentLine(
+            rule_segs = (
                 [(A_NORMAL, " "), (title_attr, f"{n}. {title}"),
                  (A_NORMAL, " "), (A_DIM, f"[{name}]"), (A_DIM, f"  {rel}")]
                 + badge_segs
-            ))
+            )
+            for wrap_line in _wrap_segs(rule_segs, inner, indent_width=4):
+                body.append(ContentLine(wrap_line))
 
             if cache and (summary := cache.get("summary")):
                 for sline in word_wrap(summary, inner - 5):
