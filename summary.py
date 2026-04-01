@@ -2754,10 +2754,18 @@ class TUI:
                 name = rules[idx].name if rules else "?"
                 segs = [(A_NORMAL, f"  Delete {name} and its test file?   [y] confirm   [n/esc] cancel")]
             elif self.detail_modify_mode:
-                segs = [(A_NORMAL, f"  Modify: {self.detail_modify_input}   [enter] send  [esc] cancel")]
-                self._draw_item(ctrl_sep + 1, ContentLine(segs, bordered=False), cols, inner)
                 prefix = "  Modify: "
-                self._show_cursor(ctrl_sep + 1, len(prefix) + self.detail_modify_cursor)
+                hint   = "   [enter] send  [esc] cancel"
+                inp    = self.detail_modify_input
+                cur    = self.detail_modify_cursor
+                avail  = max(1, cols - 1 - len(prefix) - len(hint))
+                # Viewport: keep cursor visible by scrolling horizontally
+                voff = max(0, cur - avail + 1)
+                voff = min(voff, max(0, len(inp) - avail))
+                visible = inp[voff:voff + avail]
+                segs = [(A_NORMAL, prefix + visible + hint)]
+                self._draw_item(ctrl_sep + 1, ContentLine(segs, bordered=False), cols, inner)
+                self._show_cursor(ctrl_sep + 1, len(prefix) + (cur - voff))
                 return
             else:
                 lines = self._wrap_ctrl_tokens(self._detail_ctrl_tokens(), inner)
