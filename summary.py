@@ -2752,6 +2752,7 @@ class TUI:
 
     def _deferlog_ctrl_lines(self, cols: int) -> list[list[tuple]]:
         A_DIM = curses.A_DIM
+        inner = cols - 2
 
         res = self.deferlog_eval_result
         lines = []
@@ -2762,9 +2763,12 @@ class TUI:
             lines.extend(self._eval_result_lines(res, cols))
 
         n = len(self.deferlog_entries)
-        nav = "  ·  [←/→] navigate" if n > 1 else ""
-        hint = f"  [e] eval  ·  [c] copy  ·  [r] reload{nav}  ·  [esc] close"
-        lines.append([(A_DIM, hint)])
+        tokens = ["[e] eval", "[c] copy", "[r] reload"]
+        if n > 1:
+            tokens.append("[←/→] navigate")
+        tokens.append("[esc] close")
+        for line in self._wrap_ctrl_tokens(tokens, inner):
+            lines.append([(A_DIM, "  " + line)])
         return lines
 
     # ── Rendering ─────────────────────────────────────────────────────────────
