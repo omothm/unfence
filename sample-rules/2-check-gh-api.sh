@@ -9,7 +9,7 @@ read -ra TOKENS <<< "$COMMAND"
 # the query body. Allow if no `mutation` keyword is present.
 if [[ "${TOKENS[2]}" == "graphql" ]]; then
   if echo "$COMMAND" | grep -qw "mutation"; then
-    echo defer; exit 0
+    echo ask; exit 0
   fi
   echo allow; exit 0
 fi
@@ -23,14 +23,14 @@ while (( i < ${#TOKENS[@]} )); do
     method="${TOKENS[$((i+1))]}"
     method="${method^^}"
     if [[ "$method" != "GET" ]]; then
-      echo defer; exit 0
+      echo ask; exit 0
     fi
     (( i += 2 )); continue
   fi
 
   # Mutation flags
   case "$tok" in
-    -f|--raw-field|--input) echo defer; exit 0 ;;
+    -f|--raw-field|--input) echo ask; exit 0 ;;
   esac
 
   (( i++ ))

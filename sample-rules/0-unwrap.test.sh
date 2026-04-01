@@ -18,3 +18,9 @@ run_test "sh -c rm -rf → deny"                             'sh -c "rm -rf ./so
 run_test "zsh -c rm -rf → deny"                            'zsh -c "rm -rf ./some-dir"'        "deny"
 run_test "bash --norc -c rm -rf → deny"                    'bash --norc -c "rm -rf ./some-dir"' "deny"
 run_test "bash -c safe command → allow"                    'bash -c "git status"'              "allow"
+
+run_test "timeout safe command → allow"                    "timeout 30 git status"             "allow"
+run_test "timeout rm -rf → deny"                           "timeout 30 rm -rf /tmp/foo"        "deny"
+run_test "timeout with flags safe command → allow"         "timeout -k 5 30 git log"           "allow"
+run_test "time safe command → allow"                       "time git status"                   "allow"
+run_test "time rm -rf → deny"                              "time rm -rf /tmp/foo"              "deny"

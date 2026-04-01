@@ -1,5 +1,5 @@
 #!/bin/bash
-# Unwrapper rule: xargs
+# Unwrapper rule: eval / shell -c / xargs / timeout / time
 #
 # The engine sees "xargs git status" as a single command and cannot classify it.
 # Returning recurse:<inner_cmd> re-runs the full pipeline on "git status" instead,
@@ -8,6 +8,7 @@
 # This is the "0-*" (preprocessing) layer — strip the wrapper, recurse.
 
 read -ra TOKENS <<< "$COMMAND"
+[[ ${#TOKENS[@]} -eq 0 ]] && echo defer && exit 0
 
 # Unwrap eval: eval "cmd args" or eval cmd args
 if [[ "${TOKENS[0]}" == "eval" ]]; then
@@ -34,6 +35,40 @@ if [[ "${TOKENS[0]}" =~ ^(bash|sh|zsh|dash)$ ]]; then
     fi
   done
   echo defer && exit 0
+fi
+
+# Unwrap timeout: strip flags, skip the duration argument, recurse on inner cmd
+# Flags that consume the next token: -s/--signal <sig>, -k/--kill-after <dur>
+if [[ "${TOKENS[0]}" == "timeout" ]]; then
+  i=1
+  while (( i < ${#TOKENS[@]} )); do
+    tok="${TOKENS[$i]}"
+    [[ "$tok" == "--" ]] && (( i++ )) && break
+    if [[ "$tok" != -* ]]; then
+      (( i++ ))   # this token is the duration — skip it and stop
+      break
+    fi
+    case "$tok" in
+      -s|--signal|-k|--kill-after) (( i += 2 )) ;;
+      -s=*|--signal=*|-k=*|--kill-after=*) (( i++ )) ;;
+      *) (( i++ )) ;;
+    esac
+  done
+  (( i >= ${#TOKENS[@]} )) && echo defer || echo "recurse:${TOKENS[*]:$i}"
+  exit 0
+fi
+
+# Unwrap time: strip "time" (and optional flags like -p), recurse on inner cmd
+if [[ "${TOKENS[0]}" == "time" ]]; then
+  i=1
+  while (( i < ${#TOKENS[@]} )); do
+    tok="${TOKENS[$i]}"
+    [[ "$tok" == "--" ]] && (( i++ )) && break
+    [[ "$tok" != -* ]] && break
+    (( i++ ))
+  done
+  (( i >= ${#TOKENS[@]} )) && echo defer || echo "recurse:${TOKENS[*]:$i}"
+  exit 0
 fi
 
 [[ "${TOKENS[0]}" != "xargs" ]] && echo defer && exit 0
