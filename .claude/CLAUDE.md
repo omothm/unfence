@@ -100,6 +100,8 @@ Diagnostic checklist:
 
 Nothing in the engine or the TUI should hardcode knowledge about specific rule file names, internal structures, or arrays (e.g. do not assume `1-lists.sh` exists or has an ALLOW array). When adding UI features that create or modify rules, use Claude as the agent (via `--dangerously-skip-permissions`) to read the existing rule files, understand the conventions, and decide where and how to make changes. Never hardcode "append to ALLOW array in `1-lists.sh`" or similar assumptions.
 
+**CLAUDE.md additions must follow the same principle.** This file is a shared reference — additions must be generic (concepts, conventions, invariants) and must never reference specific filenames, array names, or patterns inside `rules/`. Rule files are untracked and evolve independently; any CLAUDE.md note tied to a specific rule file will become stale or misleading.
+
 ## Transparent Flag Stripping
 
 Flags that modify execution context (e.g. `git -C <path>`) without changing the semantic identity of the command are "transparent". Stripping them is a normalization concern that belongs in a `0-*` preprocessing rule using `recurse:` — **not in the engine**.
