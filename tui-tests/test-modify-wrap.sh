@@ -12,8 +12,9 @@ run() {
     echo "--- test: modify prompt viewport scrolling ---"
     tui_start
 
-    # Navigate into the first rule's detail view
-    tui_send Enter ""; sleep 0.8
+    # Navigate into the first rule's detail view.
+    # Use "\[m\]" — "modify" would falsely match "modified" in the main list.
+    tui_send Enter ""; tui_wait_for_ctrl "\[m\]"
 
     local ctrl
     ctrl=$(tui_ctrl_line)
@@ -23,7 +24,7 @@ run() {
     fi
 
     # Enter modify mode
-    tui_send m ""; sleep 0.5
+    tui_send m ""; tui_wait_for "Modify:"
 
     local init
     init=$(tui_grep "Modify:.*")
@@ -32,9 +33,27 @@ run() {
         tui_stop; return
     fi
 
-    # Type 60 a's one-at-a-time; sleep generously to let curses process them
+    # Type 60 a's in one batch (tui_type_n batches single chars into one send-keys call).
+    # The TUI event loop processes one keystroke per iteration with ~50ms idle sleep,
+    # so 60 chars can take ~3s to fully process. Poll until the visible char count
+    # stabilizes (unchanged for 3 consecutive 100ms checks) rather than sleeping fixed.
     tui_type_n 60 a
-    sleep 1.5
+    # "Modify: a" (one space then immediate 'a') is specific to typed input.
+    # The empty-input hint "Modify:    [enter]..." has 3+ spaces, so no false positive.
+    tui_wait_for "Modify: a"
+    local _prev_count="-1" _stable=0 _cur _count
+    for _ in $(seq 1 50); do
+        sleep 0.1
+        _cur=$(tui_grep "Modify:.*")
+        _count=$(echo "$_cur" | sed 's/^Modify: //' | grep -o '^a*' | tr -d '\n' | wc -c | tr -d ' ')
+        if [[ "$_count" -gt 0 && "$_count" -eq "$_prev_count" ]]; then
+            (( _stable++ )) || true
+            [[ $_stable -ge 3 ]] && break
+        else
+            _stable=0
+            _prev_count="$_count"
+        fi
+    done
 
     # Count visible a's immediately after "Modify: " on screen
     local end_line vis_end
@@ -53,9 +72,10 @@ run() {
 
     local avail="$vis_end"
 
-    # Move cursor to start; viewport should shift left revealing the first $avail chars
+    # Move cursor to start; viewport should shift left revealing the first $avail chars.
+    # tui_type_n batches named keys into chunks of 20 with 50ms inter-chunk pauses.
     tui_type_n 60 Left
-    sleep 1.0
+    sleep 0.3   # wait for curses to settle after bulk cursor movement
 
     local start_line vis_start
     start_line=$(tui_grep "Modify:.*")

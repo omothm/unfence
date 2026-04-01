@@ -38,6 +38,7 @@ _TUI_FIXTURE_DIR=""
 # tui_fixture_setup creates an isolated temp directory with:
 #   - 5 dummy rule files (echo defer) so all number-key and nav tests work
 #   - Pre-populated cache entries so the TUI never spawns summarizer subprocesses
+#   - Pre-populated shadow/rec/log-stats caches so background analyses don't start
 #   - Rule 1 has a long description to guarantee scroll overflow in small terminals
 # The TUI is launched with UNFENCE_RULES_DIR and UNFENCE_CACHE_DIR pointing here.
 
@@ -45,6 +46,7 @@ _tui_fixture_setup() {
     _TUI_FIXTURE_DIR=$(mktemp -d)
     local rules="$_TUI_FIXTURE_DIR/rules"
     local cache="$_TUI_FIXTURE_DIR/cache"
+    local unfence_dir; unfence_dir="$(dirname "$TUI_SCRIPT")"
     mkdir -p "$rules" "$cache"
 
     # 5 minimal rule files (content irrelevant; just need to be valid .sh)
@@ -71,6 +73,39 @@ print(' '.join(
            '{"title":("Test Rule "+$i),"summary":"Dummy rule for TUI testing.","description":("Dummy rule "+$i+" used for TUI testing.")}' \
            > "$cache/rule-$i.sh"
     done
+
+    # Pre-populate shadow cache (.shadowing.json) so _load_shadows() skips the
+    # Claude API call. Cache key = (max_mtime_of_rules, rule_count). Using
+    # python3 here because jq cannot read file mtimes — no shell equivalent.
+    local mtime
+    mtime=$(python3 -c "
+import os, glob
+files = glob.glob('$rules/*.sh')
+print(max(os.stat(f).st_mtime for f in files) if files else 0)
+")
+    jq -n --argjson mtime "$mtime" --argjson count 5 \
+       '{"mtime": $mtime, "count": $count, "shadows": []}' \
+       > "$cache/.shadowing.json"
+
+    # Pre-populate rec cache (.recs.json) so _load_recs() skips the Claude API
+    # call. Cache key = byte size of unfence.log at the time of analysis.
+    local log_size=0
+    local log_file="$unfence_dir/logs/unfence.log"
+    [[ -f "$log_file" ]] && log_size=$(wc -c < "$log_file" | tr -d ' ')
+    jq -n --argjson log_size "$log_size" \
+       '{"last_ts": "", "log_size": $log_size, "recs": [], "dismissed": []}' \
+       > "$cache/.recs.json"
+
+    # Pre-populate log-stats cache (.log-stats.json) so load_log_stats() skips
+    # parsing the real log. Cache key = (mtime, size) of unfence.log.
+    local log_mtime=0 log_sz=0
+    if [[ -f "$log_file" ]]; then
+        log_mtime=$(python3 -c "import os; print(os.stat('$log_file').st_mtime)")
+        log_sz=$log_size
+    fi
+    jq -n --argjson mtime "$log_mtime" --argjson size "$log_sz" \
+       '{"mtime": $mtime, "size": $size, "counts": {"allow":0,"deny":0,"defer":0,"per_rule":{}}}' \
+       > "$cache/.log-stats.json"
 }
 
 _tui_fixture_teardown() {
@@ -87,7 +122,8 @@ tui_start() {
     tmux new-session -d -s "$SESSION" \
         "env UNFENCE_RULES_DIR='$_TUI_FIXTURE_DIR/rules' UNFENCE_CACHE_DIR='$_TUI_FIXTURE_DIR/cache' python3 $TUI_SCRIPT" 2>/dev/null \
         || { echo "ERROR: could not create tmux session" >&2; exit 1; }
-    sleep 2  # TUI renders asynchronously; wait for initial paint
+    tui_wait_for_ctrl "navigate" 50 \
+        || { echo "ERROR: TUI did not render initial view within 5s" >&2; exit 1; }
 }
 
 # tui_start_sized W H — start TUI in a tmux pane of exactly W×H characters.
@@ -99,7 +135,8 @@ tui_start_sized() {
     tmux new-session -d -s "$SESSION" -x "$width" -y "$height" \
         "env UNFENCE_RULES_DIR='$_TUI_FIXTURE_DIR/rules' UNFENCE_CACHE_DIR='$_TUI_FIXTURE_DIR/cache' python3 $TUI_SCRIPT" 2>/dev/null \
         || { echo "ERROR: could not create tmux session" >&2; exit 1; }
-    sleep 2
+    tui_wait_for_ctrl "navigate" 50 \
+        || { echo "ERROR: TUI did not render initial view within 5s" >&2; exit 1; }
 }
 
 tui_stop() {
@@ -127,11 +164,30 @@ tui_stop() {
 #   q          quit
 tui_send() { tmux send-keys -t "$SESSION" "$@"; }
 
-# tui_type_n N CHAR — type a single character N times.
-# One send-keys per char for reliable input; bulk send can race with curses rendering.
+# tui_type_n N CHAR — type a single character or named key N times.
+#
+# Single chars (e.g. "a") are batched into one send-keys call using a
+# repeated string, which is significantly faster than N individual calls.
+# Named keys (e.g. "Left", "Right") are sent in chunks of 20 with 50ms
+# inter-chunk pauses to avoid flooding curses's input queue.
 tui_type_n() {
     local n="$1" ch="$2"
-    for _ in $(seq 1 "$n"); do tui_send "$ch" ""; done
+    if [[ ${#ch} -eq 1 ]]; then
+        # Single char: build a string of N copies and send in one call
+        local str; str=$(printf "%${n}s" | tr ' ' "$ch")
+        tui_send "$str" ""
+    else
+        # Named key: send in batches of 20 to avoid flooding curses
+        local sent=0 batch args
+        while (( sent < n )); do
+            batch=$(( n - sent > 20 ? 20 : n - sent ))
+            args=()
+            for _ in $(seq 1 "$batch"); do args+=("$ch"); done
+            tui_send "${args[@]}" ""
+            sleep 0.05
+            sent=$(( sent + batch ))
+        done
+    fi
 }
 
 # tui_capture — print the current full terminal contents (attributes stripped).
@@ -209,13 +265,16 @@ tui_ctrl_line() { tui_capture | tail -2; }
 
 # tui_assert_ctrl LABEL PATTERN — assert PATTERN appears in the ctrl line(s) only.
 # Prefer this over tui_assert_screen when a pattern could appear in body content.
+# Retries up to 3 times with 50ms pauses to tolerate brief mid-render blips where
+# a background-thread invalidation momentarily clears the ctrl line between the
+# preceding tui_wait_for_ctrl and this assertion.
 tui_assert_ctrl() {
-    local label="$1" pattern="$2"
-    if tui_ctrl_line | grep -q "$pattern"; then
-        tui_pass "$label"
-    else
-        tui_fail "$label (pattern '$pattern' not in ctrl line: $(tui_ctrl_line | tr '\n' '|'))"
-    fi
+    local label="$1" pattern="$2" i
+    for i in 1 2 3; do
+        tui_ctrl_line | grep -q "$pattern" && { tui_pass "$label"; return; }
+        sleep 0.05
+    done
+    tui_fail "$label (pattern '$pattern' not in ctrl line: $(tui_ctrl_line | tr '\n' '|'))"
 }
 
 # tui_assert_ctrl_not LABEL PATTERN — assert PATTERN is absent from the ctrl line(s).
@@ -230,6 +289,53 @@ tui_assert_ctrl_not() {
 
 # tui_grep PATTERN — grep the screen for PATTERN, empty string on no match
 tui_grep() { tui_capture | grep -o "$1" || echo ""; }
+
+# ── Wait helpers ───────────────────────────────────────────────────────────────
+
+# tui_wait_for PATTERN [max_tries] — poll until PATTERN appears anywhere on screen.
+# Polls every 100ms. Default timeout: 50 × 0.1s = 5s.
+# Returns 0 if found, 1 if timed out.
+# Use after tui_send when the UI must transition to a new state before asserting.
+# CAUTION: patterns like "\[m\]" can produce false positives from body content
+# (on BSD grep, "\[m\]" = char class "[m]", matching any "m"). For ctrl-line-only
+# state transitions, use tui_wait_for_ctrl instead.
+tui_wait_for() {
+    local pattern="$1" max_tries="${2:-50}"
+    local i
+    for i in $(seq 1 "$max_tries"); do
+        tui_capture | grep -q "$pattern" && return 0
+        sleep 0.1
+    done
+    return 1
+}
+
+# tui_wait_for_not PATTERN [max_tries] — poll until PATTERN is absent from screen.
+# Polls every 100ms. Default timeout: 30 × 0.1s = 3s.
+# Returns 0 if absent, 1 if timed out.
+tui_wait_for_not() {
+    local pattern="$1" max_tries="${2:-30}"
+    local i
+    for i in $(seq 1 "$max_tries"); do
+        tui_capture | grep -q "$pattern" || return 0
+        sleep 0.1
+    done
+    return 1
+}
+
+# tui_wait_for_ctrl PATTERN [max_tries] — poll until PATTERN appears in the ctrl line.
+# Polls every 100ms. Default timeout: 50 × 0.1s = 5s.
+# Checks only the last 2 lines (ctrl line), not the full screen. Use this
+# instead of tui_wait_for when the pattern could produce false positives in the
+# body content — e.g. "\[m\]" matches body text with "m" on BSD grep.
+tui_wait_for_ctrl() {
+    local pattern="$1" max_tries="${2:-50}"
+    local i
+    for i in $(seq 1 "$max_tries"); do
+        tui_ctrl_line | grep -q "$pattern" && return 0
+        sleep 0.1
+    done
+    return 1
+}
 
 # ── Assertions ─────────────────────────────────────────────────────────────────
 

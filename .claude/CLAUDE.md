@@ -138,7 +138,20 @@ Each `tui-tests/test-<name>.sh` is a standalone test script. To add a new test:
 
 **One test per behavioral contract** — if you add a new interactive widget (input field, confirmation dialog, scrollable pane) or change how an existing one renders, add a corresponding test.
 
-**Tests must be self-contained** — never depend on real rule files in `rules/` or accumulated command history. Always use `tui_start` / `tui_start_sized` (which call `_tui_fixture_setup` automatically) so the TUI launches against an isolated fixture: 5 dummy rules with pre-populated cache entries (rule 1 has a 24-sentence description to guarantee scroll overflow at small terminal heights). Tests must pass on a fresh checkout with an empty `rules/` directory.
+**Tests must be self-contained** — never depend on real rule files in `rules/` or accumulated command history. Always use `tui_start` / `tui_start_sized` (which call `_tui_fixture_setup` automatically) so the TUI launches against an isolated fixture: 5 dummy rules with pre-populated cache entries (rule 1 has a 24-sentence description to guarantee scroll overflow at small terminal heights). The fixture also pre-populates shadow/rec/log-stats caches so shadow analysis and recommendation analysis do **not** start on launch. Tests must pass on a fresh checkout with an empty `rules/` directory.
+
+### TUI test performance — wait for state, don't sleep fixed time
+
+Tests run in **parallel** (each has a unique tmux session and fixture dir). Use polling instead of `sleep`:
+
+- **`tui_wait_for_ctrl PATTERN`** — after `tui_send`, poll until PATTERN appears in the bottom ctrl line. Use this for transitions between main list and detail view.
+- **`tui_wait_for PATTERN`** — poll until PATTERN appears anywhere on screen. Use for full-screen patterns like "Evaluate", "Delete", "navigate" (ctrl-only text), or verdict text.
+- **`tui_wait_for_not PATTERN`** — poll until PATTERN disappears. Use when verifying a dialog or indicator went away.
+- **`sleep 0.1`** — only for cursor movement keystrokes (`j`, `k`, `Left`, `Right`) that don't change visible text, where polling has nothing to trigger on.
+
+**`tui_wait_for "\[m\]"` is a known false positive on macOS BSD grep** — `\[m\]` is interpreted as the character class `[m]` (matching any `m`), which hits "Dummy" in rule descriptions. Always use `tui_wait_for_ctrl "\[m\]"` to restrict the check to the ctrl line.
+
+**`tui_type_n N CHAR` is batched**: single chars are sent as one string (all N at once); named keys (Left, Right) are sent in chunks of 20. For slow TUI widgets (curses event loop processes one keystroke per iteration at ~20 events/s), after batch-typing you may need to wait for the count to **stabilize** rather than sleep a fixed time. See `test-modify-wrap.sh` for a stability-polling example.
 
 ### Single-line input widgets
 
