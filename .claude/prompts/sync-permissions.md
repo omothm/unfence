@@ -1,9 +1,3 @@
----
-name: sync-permissions
-description: Translate new permissions.allow entries from settings.local.json into unfence rule files with tests, then clean up the settings file.
-user-invocable: false
----
-
 # Sync Permissions
 
 You are syncing new Claude Code permission approvals ("don't ask again" entries) into the

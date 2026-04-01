@@ -54,9 +54,8 @@ CWD="$PWD"
   echo $BASHPID > "$LOCKFILE"
   echo "[$(ts)] START cwd=$CWD" >> "$LOG"
 
-  SKILL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../.claude/skills/sync-permissions.md"
-  # Strip YAML frontmatter (--- ... ---) and pass skill body as the prompt
-  PROMPT=$(awk '/^---/{n++; if(n==2){found=1; next}} found' "$SKILL")
+  PROMPT_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../.claude/prompts/sync-permissions.md"
+  PROMPT=$(cat "$PROMPT_FILE")
 
   # --setting-sources project,local: skips ~/.claude/settings.json so no hooks
   # are loaded in the spawned session — prevents cascade.

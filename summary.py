@@ -20,7 +20,7 @@ LOG_FILE        = PROJECT_DIR / "logs" / "unfence.log"
 CHANGE_LOG      = PROJECT_DIR / "logs" / "changes.log"
 REC_CACHE       = CACHE_DIR / ".recs.json"
 ACCEPTED_REC    = CACHE_DIR / ".accepted-recs.json"
-SKILL_FILE      = PROJECT_DIR / ".claude" / "skills" / "implement-recommendations.md"
+SKILL_FILE      = PROJECT_DIR / ".claude" / "prompts" / "implement-recommendations.md"
 
 
 # ── Data helpers ──────────────────────────────────────────────────────────────
