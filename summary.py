@@ -14,11 +14,12 @@ from pathlib import Path
 PROJECT_DIR     = Path(__file__).parent
 RULES_DIR       = Path(os.environ.get("UNFENCE_RULES_DIR",  str(PROJECT_DIR / "rules")))
 CACHE_DIR       = Path(os.environ.get("UNFENCE_CACHE_DIR",  str(PROJECT_DIR / ".claude" / "cache")))
-SHADOW_CACHE    = CACHE_DIR / ".shadowing.json"
-LOG_STATS_CACHE = CACHE_DIR / ".log-stats.json"
-LOG_FILE        = PROJECT_DIR / "logs" / "unfence.log"
-CHANGE_LOG      = PROJECT_DIR / "logs" / "changes.log"
-REC_CACHE       = CACHE_DIR / ".recs.json"
+SHADOW_CACHE      = CACHE_DIR / ".shadowing.json"
+LOG_STATS_CACHE   = CACHE_DIR / ".log-stats.json"
+DEFERRED_CACHE    = CACHE_DIR / ".deferred-commands.json"
+LOG_FILE          = PROJECT_DIR / "logs" / "unfence.log"
+CHANGE_LOG        = PROJECT_DIR / "logs" / "changes.log"
+REC_CACHE         = CACHE_DIR / ".recs.json"
 ACCEPTED_REC    = CACHE_DIR / ".accepted-recs.json"
 SKILL_FILE      = PROJECT_DIR / ".claude" / "prompts" / "implement-recommendations.md"
 
@@ -421,11 +422,20 @@ def rec_cache_stale() -> bool:
 
 def load_deferred_commands() -> list[tuple[str, str]]:
     """Parse the unfence log and return (timestamp, command) for deferred sessions
-    from the last 30 days, newest first."""
+    from the last 30 days, newest first.  Cached by log (mtime, size)."""
     import datetime
     log_file = PROJECT_DIR / "logs" / "unfence.log"
     if not log_file.exists():
         return []
+
+    mtime, size = _log_cache_key()
+    try:
+        cached = json.loads(DEFERRED_CACHE.read_text())
+        if cached.get("mtime") == mtime and cached.get("size") == size:
+            return [tuple(e) for e in cached["entries"]]
+    except Exception:
+        pass
+
     cutoff = datetime.datetime.now() - datetime.timedelta(days=30)
     TS_FMT = "%Y-%m-%d %H:%M:%S"
     pid_input: dict[str, tuple[str, str]] = {}   # pid -> (ts, command)
@@ -462,6 +472,13 @@ def load_deferred_commands() -> list[tuple[str, str]]:
     except OSError:
         pass
     results.reverse()
+
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        DEFERRED_CACHE.write_text(json.dumps({"mtime": mtime, "size": size, "entries": results}))
+    except Exception:
+        pass
+
     return results
 
 
