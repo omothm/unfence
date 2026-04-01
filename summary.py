@@ -149,8 +149,7 @@ def load_change_log(rule_name=None) -> list:
 
 def _ts_of(line: str):
     """Extract the timestamp string from a log line, or None."""
-    import re
-    m = re.match(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]', line)
+    m = _TS_RE.match(line)
     return m.group(1) if m else None
 
 
@@ -162,7 +161,6 @@ def _parse_deferred_commands(after_ts: str = ""):
       dict: {pattern: {"count": N, "examples": [...]}}
       last_ts: timestamp string of the last line examined, or after_ts if none.
     """
-    import re
     result = {}
     last_ts = after_ts
     try:
@@ -183,7 +181,7 @@ def _parse_deferred_commands(after_ts: str = ""):
     lines = all_lines[start_idx:]
 
     def session_of(line):
-        m = re.match(r'\[.*?\] \[([^\]]+)\]', line)
+        m = _SESSION_RE.match(line)
         return m.group(1) if m else None
 
     for i, line in enumerate(lines):
@@ -202,7 +200,7 @@ def _parse_deferred_commands(after_ts: str = ""):
                 continue
             if session_of(prev) != sess:
                 continue
-            m = re.match(r'\[.*?\] \[.*?\] INPUT (.*)', prev)
+            m = _INPUT_RE.match(prev)
             if not m:
                 continue
             raw = m.group(1).strip()
@@ -429,7 +427,6 @@ def load_deferred_commands() -> list[tuple[str, str]]:
     if not log_file.exists():
         return []
     cutoff = datetime.datetime.now() - datetime.timedelta(days=30)
-    LOG_RE = re.compile(r'^\[([^\]]+)\] \[(\d+)\] (.+)$')
     TS_FMT = "%Y-%m-%d %H:%M:%S"
     pid_input: dict[str, tuple[str, str]] = {}   # pid -> (ts, command)
     results: list[tuple[str, str]] = []
@@ -450,7 +447,7 @@ def load_deferred_commands() -> list[tuple[str, str]]:
         with open(log_file, "r", errors="replace") as fh:
             for raw in fh:
                 line = raw.rstrip("\n")
-                m = LOG_RE.match(line)
+                m = _LOG_LINE_RE.match(line)
                 if m:
                     _flush()
                     cur_ts, cur_pid, cur_lines = m.group(1), m.group(2), [m.group(3)]
@@ -542,7 +539,6 @@ def load_recent_rule_matches(rule_name: str, limit: int = 3) -> list[tuple[str, 
     if not log_file.exists():
         return []
 
-    LOG_RE = re.compile(r'^\[([^\]]+)\] \[(\d+)\] (.+)$')
     cutoff  = (datetime.date.today() - datetime.timedelta(days=30)).isoformat()
 
     pid_ts:      dict[str, str] = {}   # pid -> timestamp of INPUT
@@ -557,7 +553,7 @@ def load_recent_rule_matches(rule_name: str, limit: int = 3) -> list[tuple[str, 
                 line = raw.rstrip("\n")
                 if len(line) < 12 or line[1:11] < cutoff:
                     continue
-                m = LOG_RE.match(line)
+                m = _LOG_LINE_RE.match(line)
                 if not m:
                     continue
                 ts, pid, rest = m.group(1), m.group(2), m.group(3)
@@ -609,10 +605,9 @@ def word_wrap(text: str, width: int):
 
 def parse_md(text: str, normal, bold_attr, code_attr):
     """Parse **bold** and `code` spans; return list of (attr, str) segments."""
-    import re
     segments = []
     last = 0
-    for m in re.finditer(r'\*\*(.+?)\*\*|`([^`]+)`', text):
+    for m in _MD_RE.finditer(text):
         if m.start() > last:
             segments.append((normal, text[last:m.start()]))
         if m.group(1) is not None:
@@ -624,6 +619,14 @@ def parse_md(text: str, normal, bold_attr, code_attr):
         segments.append((normal, text[last:]))
     return segments or [(normal, text)]
 
+
+# ── Pre-compiled regex patterns ───────────────────────────────────────────────
+_TS_RE       = re.compile(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]')
+_SESSION_RE  = re.compile(r'\[.*?\] \[([^\]]+)\]')
+_INPUT_RE    = re.compile(r'\[.*?\] \[.*?\] INPUT (.*)')
+_LOG_LINE_RE = re.compile(r'^\[([^\]]+)\] \[(\d+)\] (.+)$')
+_MD_RE       = re.compile(r'\*\*(.+?)\*\*|`([^`]+)`')
+_SPACE_RE    = re.compile(r'( +)')
 
 # ── Deferlog syntax highlighting ──────────────────────────────────────────────
 # Self-contained; used only in _draw_deferlog_view.
@@ -706,7 +709,7 @@ def wrap_token_line(segs: list, width: int) -> list:
         words, pending = [], []
         for attr, text in segs:
             if attr == curses.A_NORMAL:
-                for part in re.split(r'( +)', text):
+                for part in _SPACE_RE.split(text):
                     if not part:
                         continue
                     if ' ' in part:          # space run — flush current word
