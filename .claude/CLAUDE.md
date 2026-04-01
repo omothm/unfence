@@ -143,8 +143,7 @@ Single-line text inputs must implement horizontal viewport scrolling to keep the
 
 ## TUI Safe Rendering Patterns
 
-Font glyph width bugs are invisible in tmux captures but visible in the user's terminal.
-When writing line-drawing or fill code in `summary.py`:
+Font glyph width bugs are **invisible in tmux captures but visible in the user's terminal** (Ghostty). When writing line-drawing or fill code in `summary.py`:
 
 - **Never** use `addstr("─" * n)` or similar Unicode box-drawing char repetition for fills.
   Use `stdscr.hline(row, col, curses.ACS_HLINE, n, attr)` instead.
@@ -159,6 +158,8 @@ When writing line-drawing or fill code in `summary.py`:
 **Rationale:** Python `len()` counts code points; ncurses counts display columns via
 `wcwidth`. These diverge for box-drawing chars on some fonts, causing `addstr` to
 silently clip or fail. ACS functions let ncurses own all column accounting.
+
+**If layout looks correct in `validate-tui.sh` but broken for the user, ask for a Ghostty screenshot.** Automated captures cannot detect font glyph width mismatches — see `tui-tests/helper.sh` for the full list of irreducible limitations.
 
 ## PROJECT_CONFIG Schema Conventions
 
