@@ -370,7 +370,11 @@ while IFS= read -r -d '' part; do
 done < <(split_commands "$RAW_COMMAND")
 
 if $has_deny;   then _output "deny"  "Command matches a DENY rule"; fi
-if $has_ask;    then log "=> defer (ASK rule matched)"; exit 0; fi
+if $has_ask; then
+  log "=> ask (rule requested user prompt)"
+  jq -n '{"hookSpecificOutput":{"hookEventName":"PreToolUse","ruleVerdict":"ask"}}'
+  exit 0
+fi
 if $all_allow;  then _output "allow" "All command parts match ALLOW rules"; fi
 
 log "=> defer (some parts had no matching rule)"

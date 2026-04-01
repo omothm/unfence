@@ -53,7 +53,7 @@ run_test() {
     local json output actual
     json=$(jq -n --arg cmd "$command" '{"tool_input":{"command":$cmd}}')
     output=$(bash "$ENGINE" <<< "$json" 2>/dev/null)
-    actual=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<< "$output" 2>/dev/null)
+    actual=$(jq -r '(.hookSpecificOutput.ruleVerdict // .hookSpecificOutput.permissionDecision) // empty' <<< "$output" 2>/dev/null)
     [[ -z "$actual" ]] && actual="defer"
 
     if [[ "$actual" == "$expected" ]]; then
@@ -90,7 +90,7 @@ run_test_with_config() {
     output=$(bash "$ENGINE" <<< "$json" 2>/dev/null)
     rm -rf "$tmpdir"
 
-    actual=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<< "$output" 2>/dev/null)
+    actual=$(jq -r '(.hookSpecificOutput.ruleVerdict // .hookSpecificOutput.permissionDecision) // empty' <<< "$output" 2>/dev/null)
     [[ -z "$actual" ]] && actual="defer"
 
     if [[ "$actual" == "$expected" ]]; then
@@ -121,7 +121,7 @@ run_test_with_cwd() {
     json=$(jq -n --arg cmd "$command" --arg cwd "$cwd" \
       '{"tool_input":{"command":$cmd},"cwd":$cwd}')
     output=$(bash "$ENGINE" <<< "$json" 2>/dev/null)
-    actual=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<< "$output" 2>/dev/null)
+    actual=$(jq -r '(.hookSpecificOutput.ruleVerdict // .hookSpecificOutput.permissionDecision) // empty' <<< "$output" 2>/dev/null)
     [[ -z "$actual" ]] && actual="defer"
 
     if [[ "$actual" == "$expected" ]]; then

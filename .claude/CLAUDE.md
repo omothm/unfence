@@ -20,9 +20,21 @@ Each `*.sh` file (excluding `*.test.sh`) in the `rules/` directory is a rule. Ru
 |---|---|
 | `allow` | Auto-approve this command |
 | `deny` | Block this command |
-| `ask` | Defer to Claude Code's built-in permission prompt |
+| `ask` | This rule explicitly wants the user to decide — stop the pipeline and prompt |
 | `defer` | This rule has no opinion — pass to the next rule |
 | `recurse:<cmd>` | Restart the rule pipeline with `<cmd>` (e.g. after unwrapping `xargs`) |
+
+### `ask` vs `defer` — a critical distinction
+
+These two verdicts both result in the user being prompted, but they are semantically very different:
+
+- **`ask`** means a rule *recognized* the command and made an active decision to require human approval. The rule knows what the command is and deliberately flagged it. The engine emits `{"hookSpecificOutput":{"ruleVerdict":"ask"}}` so the outcome is observable.
+- **`defer`** means no rule *claimed* the command at all — the engine ran out of rules with an opinion. The command falls back to Claude Code's default behavior (which is also to prompt, but for a different reason: *unknown*, not *flagged*).
+
+Practical consequences:
+- **Deferlog**: commands that `defer` all the way through appear in the TUI's deferred-commands log (so you can review what's unhandled). Commands that `ask` do **not** appear there — they were handled intentionally.
+- **Tests**: `ask` and `defer` must be tested with distinct expected values (`"ask"` vs `"defer"`). Using `"defer"` as the expected value for a rule that returns `ask` hides the distinction and makes it impossible to verify the rule is actually firing.
+- **Rule design**: use `ask` when you have recognized the command and want to require approval. Use `defer` when your rule simply doesn't apply to this command and you want the next rule to have a chance.
 
 ### Execution Order
 
@@ -106,6 +118,29 @@ Key principles:
 python3 -m py_compile summary.py && echo OK
 ```
 
+## TUI Testing
+
+`tui-tests/` contains a suite of interactive TUI smoke tests driven via tmux. Run the full suite after **any** change to `summary.py`:
+
+```bash
+bash ~/.claude/unfence/validate-tui.sh
+```
+
+Each `tui-tests/test-<name>.sh` is a standalone test script. To add a new test:
+1. Create `tui-tests/test-<name>.sh` and `source "$(dirname "$0")/helper.sh"` at the top.
+2. Define a `run()` function that uses the helper primitives (`tui_start`, `tui_stop`, `tui_send`, `tui_type_n`, `tui_capture`, `tui_grep`, `tui_pass`, `tui_fail`, etc.).
+3. Call `tui_main "$@"` at the end.
+4. `validate-tui.sh` auto-discovers all `tui-tests/test-*.sh` files.
+
+**One test per behavioral contract** — if you add a new interactive widget (input field, confirmation dialog, scrollable pane) or change how an existing one renders, add a corresponding test.
+
+### Single-line input widgets
+
+Single-line text inputs must implement horizontal viewport scrolling to keep the cursor visible. Key invariants:
+- Available display width = `cols - 1 - len(fixed_prefix) - len(fixed_hint)` — the `-1` avoids writing to the last column of the last terminal row, which curses rejects.
+- `voff = clamp(cursor - avail + 1, 0, max(0, len(text) - avail))` — cursor stays within the visible window.
+- Visible count is the same at cursor-end and cursor-start (stable avail). Moving the cursor changes `voff`, not the number of visible chars.
+
 ## TUI Safe Rendering Patterns
 
 Font glyph width bugs are invisible in tmux captures but visible in the user's terminal.
@@ -150,9 +185,12 @@ The `rules/` directory files are **not tracked by git** (only a `.gitkeep` is co
 
 ## Commit and Push Policy
 
-For simple, self-contained fixes (e.g. a single-file change with an obvious, low-risk purpose), **automatically commit and push without asking for confirmation**. Use a concise commit message that describes the change. Do not ask "should I commit this?" — just do it.
+**After completing any change to tracked files (`summary.py`, `validate-tui.sh`, `tui-tests/`, `.claude/CLAUDE.md`, etc.), commit and push immediately — without asking, without waiting.** This is mandatory, not optional. Do not finish a task without committing. Do not ask "should I commit?" — just do it.
 
-**Before committing, always check `git diff` for pre-existing uncommitted changes that belong to other agents.** Commit only your own changes. If unrelated changes are present, stash them first (`git stash`), commit your change, then restore the stash (`git stash pop`).
+Steps every time:
+1. `git diff` — confirm only your own changes are staged/unstaged.
+2. If unrelated changes are present (from other agents), `git stash` them first, commit your change, then `git stash pop`.
+3. Commit with a concise message and push: `git push`.
 
 ## Rule Count Discipline
 
