@@ -192,6 +192,10 @@ Steps every time:
 2. If unrelated changes are present (from other agents), `git stash` them first, commit your change, then `git stash pop`.
 3. Commit with a concise message and push: `git push`.
 
+## README Sync
+
+After any change that affects user-visible behavior (engine logic, TUI features, setup steps, sample-rule patterns), check `README.md` for stale descriptions and update them. Keep the README lean — fix outdated information, don't expand it. The README is the only user-facing doc; CLAUDE.md is internal.
+
 ## Rule Count Discipline
 
 When a user requests a modification or addition of a rule, **first evaluate whether an existing rule is a better fit** for expansion or contraction. Suggest expanding an existing rule if it covers the same domain or command family — keep the total rule count lean. Only create a new rule file if the modification is genuinely distinct in logic or domain. After any change, automatically run `./summary.py` to show the updated state, highlighting what changed.
