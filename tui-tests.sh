@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# validate-tui.sh — Run the TUI test suite from tui-tests/.
+# tui-tests.sh — Run the TUI test suite from tui-tests/.
 #
 # Usage:
-#   bash validate-tui.sh [test-file-glob]
+#   bash tui-tests.sh [test-file-glob]
 #
 # Examples:
-#   bash validate-tui.sh                        # run all tests
-#   bash validate-tui.sh tui-tests/test-modify* # run specific test(s)
+#   bash tui-tests.sh                        # run all tests
+#   bash tui-tests.sh tui-tests/test-modify* # run specific test(s)
 #
 # Each file in tui-tests/test-*.sh is an independent test script.
-# To add a new test, create tui-tests/test-<name>.sh using helper.sh.
+# To add a new test, create tui-tests/test-<name>.sh using tui-tests/helper.sh.
 # Exit code: 0 = all pass, 1 = any fail.
 
 set -euo pipefail

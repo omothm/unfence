@@ -62,7 +62,13 @@ Over time your `rules/` directory grows to reflect your actual workflow, fully a
 bash run-tests.sh
 ```
 
-The runner sources every `*.test.sh` in `rules/` and reports pass/fail. Always run after changing a rule. Never proceed if any test is failing.
+The runner sources every `*.test.sh` in `rules/`, reports pass/fail, then runs the TUI test suite (`tui-tests/`). Always run after changing a rule or `summary.py`. Never proceed if any test is failing.
+
+To run only the TUI tests:
+
+```bash
+bash tui-tests.sh
+```
 
 ## Writing rules
 

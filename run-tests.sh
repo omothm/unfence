@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Test runner for unfence.sh
-# Loads *.test.sh files from rules/ and runs them.
+# Master test runner for unfence.sh
+# Runs rule tests (engine + rules/) then TUI tests (tui-tests/).
 # Run: bash run-tests.sh  (from the project root)
 #
 
@@ -36,6 +36,11 @@ trap _cleanup EXIT
 
 # run_test: launches the engine check as a background job, writes result to a
 # temp file. Results are collected in order after all test files are sourced.
+#
+# Rule test files (rules/*.test.sh) are sourced directly into this script's
+# process, so these exported functions are available to them without any
+# explicit import.  This differs from TUI tests, which run as subprocesses
+# and therefore source tui-tests/helper.sh themselves.
 run_test() {
   local description="$1" command="$2" expected="$3"
   local seq=$(( ++_SEQ ))
@@ -135,7 +140,7 @@ run_test_with_cwd() {
 export -f run_test_with_cwd
 
 echo "═══════════════════════════════════════════════════════════════════"
-echo " unfence test suite"
+echo " unfence test suite — rules"
 echo "═══════════════════════════════════════════════════════════════════"
 
 # Engine tests are rule-suite-independent — always run them first.
@@ -188,9 +193,15 @@ done
 echo ""
 echo "═══════════════════════════════════════════════════════════════════"
 if (( FAIL == 0 )); then
-  printf "${GREEN}All %d tests passed.${NC}\n" "$TOTAL"
+  printf "${GREEN}All %d rule tests passed.${NC}\n" "$TOTAL"
 else
-  printf "${RED}%d/%d tests failed.${NC}\n" "$FAIL" "$TOTAL"
+  printf "${RED}%d/%d rule tests failed.${NC}\n" "$FAIL" "$TOTAL"
 fi
 echo "═══════════════════════════════════════════════════════════════════"
-exit $FAIL
+
+# TUI tests
+echo ""
+TUI_EXIT=0
+bash "$SCRIPT_DIR/tui-tests.sh" || TUI_EXIT=$?
+
+exit $(( FAIL + TUI_EXIT ))

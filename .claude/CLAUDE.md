@@ -72,6 +72,8 @@ run_test_with_config "description" 'command string' "expected_verdict" '{"key": 
 
 This writes the config JSON to a temp `.claude/unfence.json` and passes it as the `cwd` to the engine. Always include a `run_test` (no config) case to verify that missing config correctly produces `defer`.
 
+**Why rule tests don't have a separate helper.sh:** Rule test files (`rules/*.test.sh`) are *sourced* directly into `run-tests.sh`, so they share its process and automatically have access to `run_test`, `run_test_with_config`, and `run_test_with_cwd` without any import. TUI tests run as *subprocesses*, so they must explicitly `source tui-tests/helper.sh` to get their helpers. This is an intentional architectural difference, not an oversight.
+
 ### Requirements
 
 - **Every change to a rule file MUST be accompanied by corresponding test changes.** Adding a new pattern requires at least one positive and one negative test. Modifying behavior requires updating affected tests.
@@ -122,17 +124,17 @@ python3 -m py_compile summary.py && echo OK
 
 ## TUI Testing
 
-`tui-tests/` contains a suite of interactive TUI smoke tests driven via tmux. Run the full suite after **any** change to `summary.py`:
+`tui-tests/` contains a suite of interactive TUI smoke tests driven via tmux. They run automatically at the end of `run-tests.sh`, or you can run them directly:
 
 ```bash
-bash ~/.claude/unfence/validate-tui.sh
+bash ~/.claude/unfence/tui-tests.sh
 ```
 
 Each `tui-tests/test-<name>.sh` is a standalone test script. To add a new test:
 1. Create `tui-tests/test-<name>.sh` and `source "$(dirname "$0")/helper.sh"` at the top.
 2. Define a `run()` function that uses the helper primitives (`tui_start`, `tui_stop`, `tui_send`, `tui_type_n`, `tui_capture`, `tui_grep`, `tui_pass`, `tui_fail`, etc.).
 3. Call `tui_main "$@"` at the end.
-4. `validate-tui.sh` auto-discovers all `tui-tests/test-*.sh` files.
+4. `tui-tests.sh` auto-discovers all `tui-tests/test-*.sh` files.
 
 **One test per behavioral contract** — if you add a new interactive widget (input field, confirmation dialog, scrollable pane) or change how an existing one renders, add a corresponding test.
 
@@ -163,7 +165,7 @@ Font glyph width bugs are **invisible in tmux captures but visible in the user's
 `wcwidth`. These diverge for box-drawing chars on some fonts, causing `addstr` to
 silently clip or fail. ACS functions let ncurses own all column accounting.
 
-**If layout looks correct in `validate-tui.sh` but broken for the user, ask for a Ghostty screenshot.** Automated captures cannot detect font glyph width mismatches — see `tui-tests/helper.sh` for the full list of irreducible limitations.
+**If layout looks correct in `tui-tests.sh` but broken for the user, ask for a Ghostty screenshot.** Automated captures cannot detect font glyph width mismatches — see `tui-tests/helper.sh` for the full list of irreducible limitations.
 
 ## PROJECT_CONFIG Schema Conventions
 
@@ -190,7 +192,7 @@ The `rules/` directory files are **not tracked by git** (only a `.gitkeep` is co
 
 ## Commit and Push Policy
 
-**After completing any change to tracked files (`summary.py`, `validate-tui.sh`, `tui-tests/`, `.claude/CLAUDE.md`, etc.), commit and push immediately — without asking, without waiting.** This is mandatory, not optional. Do not finish a task without committing. Do not ask "should I commit?" — just do it.
+**After completing any change to tracked files (`summary.py`, `tui-tests.sh`, `tui-tests/`, `run-tests.sh`, `engine-tests.sh`, `.claude/CLAUDE.md`, etc.), commit and push immediately — without asking, without waiting.** This is mandatory, not optional. Do not finish a task without committing. Do not ask "should I commit?" — just do it.
 
 Steps every time:
 1. `git diff` — confirm only your own changes are staged/unstaged.
