@@ -7,9 +7,9 @@
 #  3. Pressing ↑ scrolls back up; ↑ indicator disappears at top
 #  4. ← / → (prev/next rule) resets scroll to 0 (↑ indicator disappears)
 #
-# Uses a small terminal (80×16) to guarantee overflow even for short descriptions.
-# With 16 rows: HEADER_ROWS=3, CTRL_ROWS=2, content_rows = 16-3-2 = 11 rows.
-# Any rule with a cached summary + recent commands section overflows 11 rows.
+# Uses a small terminal (80×12) to guarantee overflow.
+# With 12 rows: HEADER_ROWS=3, CTRL_ROWS=2, content_rows = 12-3-2 = 7 rows.
+# Rule 1's pre-populated 24-sentence description overflows 7 rows reliably.
 
 source "$(dirname "$0")/helper.sh"
 
@@ -19,12 +19,12 @@ has_up_indicator()   { tui_capture | grep -q "↑"; }
 
 run() {
     echo "--- test: detail view scrolling ---"
-    tui_start_sized 80 16
+    tui_start_sized 80 12
 
-    # Open rule 4 (1-lists.sh) — high command count guarantees overflow
-    tui_send "4" ""; sleep 1.0
+    # Open rule 1 — pre-populated 24-sentence cache entry guarantees overflow at 80×12
+    tui_send "1" ""; sleep 1.0
 
-    tui_assert_screen "rule 4 detail open" "modify"
+    tui_assert_screen "rule 1 detail open" "modify"
 
     # 1. At top: ↓ indicator should be visible (content overflows downward)
     if ! has_down_indicator; then

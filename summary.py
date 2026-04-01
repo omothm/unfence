@@ -12,8 +12,8 @@ import time
 from pathlib import Path
 
 PROJECT_DIR     = Path(__file__).parent
-RULES_DIR       = PROJECT_DIR / "rules"
-CACHE_DIR       = PROJECT_DIR / ".claude" / "cache"
+RULES_DIR       = Path(os.environ.get("UNFENCE_RULES_DIR",  str(PROJECT_DIR / "rules")))
+CACHE_DIR       = Path(os.environ.get("UNFENCE_CACHE_DIR",  str(PROJECT_DIR / ".claude" / "cache")))
 SHADOW_CACHE    = CACHE_DIR / ".shadowing.json"
 LOG_STATS_CACHE = CACHE_DIR / ".log-stats.json"
 LOG_FILE        = PROJECT_DIR / "logs" / "unfence.log"

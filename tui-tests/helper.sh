@@ -31,14 +31,61 @@ TUI_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/summary.py"
 SESSION="unfence-tui-test-$$"
 PASS=0
 FAIL=0
+_TUI_FIXTURE_DIR=""
+
+# ── Fixture ────────────────────────────────────────────────────────────────────
+# Tests must never depend on the real rules/ directory or its accumulated history.
+# tui_fixture_setup creates an isolated temp directory with:
+#   - 5 dummy rule files (echo defer) so all number-key and nav tests work
+#   - Pre-populated cache entries so the TUI never spawns summarizer subprocesses
+#   - Rule 1 has a long description to guarantee scroll overflow in small terminals
+# The TUI is launched with UNFENCE_RULES_DIR and UNFENCE_CACHE_DIR pointing here.
+
+_tui_fixture_setup() {
+    _TUI_FIXTURE_DIR=$(mktemp -d)
+    local rules="$_TUI_FIXTURE_DIR/rules"
+    local cache="$_TUI_FIXTURE_DIR/cache"
+    mkdir -p "$rules" "$cache"
+
+    # 5 minimal rule files (content irrelevant; just need to be valid .sh)
+    for i in 1 2 3 4 5; do
+        printf '#!/usr/bin/env bash\necho defer\n' > "$rules/rule-$i.sh"
+        chmod +x "$rules/rule-$i.sh"
+    done
+
+    # Long description for rule 1: 24 sentences → overflows any small terminal
+    local long_desc
+    long_desc=$(python3 -c "
+print(' '.join(
+    'Sentence %d: this is a dummy rule used only for TUI testing and always defers.' % i
+    for i in range(1, 25)
+))")
+
+    jq -n --arg d "$long_desc" \
+       '{"title":"Test Rule 1","summary":"Dummy rule for TUI testing.","description":$d}' \
+       > "$cache/rule-1.sh"
+
+    # Short cache entries for rules 2–5 (prevent summarizer from running)
+    for i in 2 3 4 5; do
+        jq -n --arg i "$i" \
+           '{"title":("Test Rule "+$i),"summary":"Dummy rule for TUI testing.","description":("Dummy rule "+$i+" used for TUI testing.")}' \
+           > "$cache/rule-$i.sh"
+    done
+}
+
+_tui_fixture_teardown() {
+    [[ -n "$_TUI_FIXTURE_DIR" ]] && rm -rf "$_TUI_FIXTURE_DIR" || true
+    _TUI_FIXTURE_DIR=""
+}
 
 # ── Lifecycle ──────────────────────────────────────────────────────────────────
 
 tui_start() {
     # No explicit dimensions: uses the current terminal size.
     # Use tui_start_sized when a specific size is required (e.g. to force scroll overflow).
+    _tui_fixture_setup
     tmux new-session -d -s "$SESSION" \
-        "python3 $TUI_SCRIPT" 2>/dev/null \
+        "env UNFENCE_RULES_DIR='$_TUI_FIXTURE_DIR/rules' UNFENCE_CACHE_DIR='$_TUI_FIXTURE_DIR/cache' python3 $TUI_SCRIPT" 2>/dev/null \
         || { echo "ERROR: could not create tmux session" >&2; exit 1; }
     sleep 2  # TUI renders asynchronously; wait for initial paint
 }
@@ -48,14 +95,16 @@ tui_start() {
 # overflows the viewport so scroll behavior can be exercised.
 tui_start_sized() {
     local width="${1:-80}" height="${2:-24}"
+    _tui_fixture_setup
     tmux new-session -d -s "$SESSION" -x "$width" -y "$height" \
-        "python3 $TUI_SCRIPT" 2>/dev/null \
+        "env UNFENCE_RULES_DIR='$_TUI_FIXTURE_DIR/rules' UNFENCE_CACHE_DIR='$_TUI_FIXTURE_DIR/cache' python3 $TUI_SCRIPT" 2>/dev/null \
         || { echo "ERROR: could not create tmux session" >&2; exit 1; }
     sleep 2
 }
 
 tui_stop() {
     tmux kill-session -t "$SESSION" 2>/dev/null || true
+    _tui_fixture_teardown
 }
 
 # ── Interaction primitives ─────────────────────────────────────────────────────

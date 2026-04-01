@@ -134,6 +134,8 @@ Each `tui-tests/test-<name>.sh` is a standalone test script. To add a new test:
 
 **One test per behavioral contract** — if you add a new interactive widget (input field, confirmation dialog, scrollable pane) or change how an existing one renders, add a corresponding test.
 
+**Tests must be self-contained** — never depend on real rule files in `rules/` or accumulated command history. Always use `tui_start` / `tui_start_sized` (which call `_tui_fixture_setup` automatically) so the TUI launches against an isolated fixture: 5 dummy rules with pre-populated cache entries (rule 1 has a 24-sentence description to guarantee scroll overflow at small terminal heights). Tests must pass on a fresh checkout with an empty `rules/` directory.
+
 ### Single-line input widgets
 
 Single-line text inputs must implement horizontal viewport scrolling to keep the cursor visible. Key invariants:
