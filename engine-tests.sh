@@ -45,3 +45,14 @@ run_test "hash inside subshell (paren guard) → allow" 'OUTER=$(Y=${#z})'      
 run_test "lone { → allow"           '{'                   "allow"
 run_test "bare } → allow"           '}'                   "allow"
 run_test "} with redirect → allow"  '} > /tmp/out.xml'    "allow"
+
+# --- array element assignments ---
+# VAR[subscript]=value: subscript contains letters, numbers, strings, or paths.
+# These are pure in-shell operations — no subprocess → always allow.
+run_test "simple array element assignment → allow"      'arr[0]="value"'                           "allow"
+run_test "array element with path key → allow"          'sessions["/foo/bar.jsonl"]="slug"'        "allow"
+run_test "array element with var subscript → allow"     'arr[$key]="value"'                        "allow"
+run_test "array element arithmetic value → allow"       'arr[0]=$(( 1 + 2 ))'                      "allow"
+# Negative: array element with $(cmd) value — inner command must pass rules.
+# In the engine-test fixture no rule handles 'dangerous', so it defers.
+run_test "array element with subshell value → defers"   'arr[0]=$(dangerous)'                      "defer"

@@ -218,6 +218,19 @@ classify_single() {
     [[ "${TOKENS[$last_idx]}" == *")" ]] && TOKENS[$last_idx]="${TOKENS[$last_idx]%%)}"
   elif [[ "${TOKENS[0]}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
     echo "allow"; return   # simple VAR=value → allow
+  elif [[ "${TOKENS[0]}" =~ ^[A-Za-z_][A-Za-z0-9_]*\[ ]]; then
+    # Array element assignment: VAR[subscript]=value / VAR[subscript]=$(cmd)
+    if [[ "${TOKENS[0]}" =~ \]=\$\(\( ]]; then
+      echo "allow"; return  # VAR[k]=$(( expr )) — arithmetic, no subprocess
+    elif [[ "${TOKENS[0]}" =~ \]=\$\( ]]; then
+      # VAR[k]=$(cmd ...) — extract subshell command and re-run through rules
+      local rest="${TOKENS[0]#*]=\$(}"
+      if [[ -n "$rest" ]]; then TOKENS[0]="$rest"; else TOKENS=("${TOKENS[@]:1}"); fi
+      local last_idx=$(( ${#TOKENS[@]} - 1 ))
+      [[ "${TOKENS[$last_idx]}" == *")" ]] && TOKENS[$last_idx]="${TOKENS[$last_idx]%%)}"
+    else
+      echo "allow"; return  # VAR[k]=value — simple array element assignment → allow
+    fi
   fi
   # Strip leading inline env-var prefixes (e.g. TZ=UTC from 'var=$(TZ=UTC cmd ...)')
   while [[ ${#TOKENS[@]} -gt 0 && "${TOKENS[0]}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; do
