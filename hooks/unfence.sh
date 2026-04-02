@@ -133,6 +133,13 @@ split_commands() {
         if [[ "$ch" == ";" ]];       then printf '%s\0' "$current"; current=""; (( i++ ));    continue; fi
         if [[ "$ch" == "|" ]];       then printf '%s\0' "$current"; current=""; (( i++ ));    continue; fi
         if [[ "$ch" == $'\n' ]];     then printf '%s\0' "$current"; current=""; (( i++ ));    continue; fi
+        # Inline comment: # preceded by whitespace (or nothing) starts a comment → skip to EOL.
+        # Only applies at top-level (outside brackets/parens), matching bash semantics.
+        if [[ "$ch" == "#" && ( -z "$current" || "${current: -1}" == " " || "${current: -1}" == $'\t' ) ]]; then
+          printf '%s\0' "$current"; current=""
+          while (( i < len )) && [[ "${cmd:$i:1}" != $'\n' ]]; do (( i++ )); done
+          continue
+        fi
       fi
     fi
 
