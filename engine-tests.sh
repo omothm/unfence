@@ -9,6 +9,34 @@ run_test "semicolon then inline comment → allow"    '; # this is a comment'   
 run_test "inline comment at start of command → allow" '# standalone comment'                   "allow"
 run_test "two semis then inline comment → allow"    '; ; # trailing comment'                   "allow"
 run_test "inline comment with preceding tab → allow" $';\t# tabbed comment'                    "allow"
+# } is an engine-always-allow; with an inline comment after it the comment is stripped first.
+run_test "} followed by inline comment → allow"     '} # comment after brace'                  "allow"
+
+# --- hash is NOT a comment when inside quotes ---
+# VAR=... is engine-always-allow regardless of rules.
+# In split_commands the in_double / in_single guards prevent the # handler from firing.
+run_test "hash in double-quoted assignment → allow"  'X="foo#bar"'                              "allow"
+run_test "hash in single-quoted assignment → allow"  "X='foo#bar'"                              "allow"
+
+# --- hash is NOT a comment when not preceded by whitespace ---
+# The handler checks: last char of current must be whitespace (or current empty).
+# ${#var}: { is before #.  foo#bar: letter is before #.  Both are rule-independent VAR=.
+run_test "hash in parameter expansion → allow"       'X=${#var}'                                "allow"
+run_test "hash immediately after word chars → allow" 'X=foo#bar'                                "allow"
+
+# --- hash inside $() is NOT a comment (paren_depth > 0 guard) ---
+# OUTER=$(...) strips the wrapper; inner becomes Y=${#z} — another VAR= — engine allows.
+# If paren_depth guard were absent, the # inside $() would be treated as a comment,
+# the ) would never close, and the subshell token would be malformed.
+run_test "hash inside subshell (paren guard) → allow" 'OUTER=$(Y=${#z})'                       "allow"
+
+# --- hash inside [[ ]] is NOT a comment (double_bracket_depth > 0 guard) ---
+# [[ ... ]] commands always defer in the engine-test fixture (no rule handles them), so
+# there is no rule-independent way to distinguish correct vs broken depth-guard behavior
+# purely from the overall verdict.  The guard is verified by the rule-suite tests that
+# exercise [[ ]] patterns where the verdict is known.  The code path is:
+#   if (( double_bracket_depth == 0 && paren_depth == 0 )); then   ← guards the # handler
+# ensuring # inside [[ ... ]] is never treated as a comment.
 
 # --- brace group normalization ---
 # split_commands splits "{ cmd; } > file" on ; yielding "{ cmd" and "} > file".
