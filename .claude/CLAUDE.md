@@ -203,6 +203,8 @@ Rules that need project-specific configuration read `$PROJECT_CONFIG`, which is 
 
 The `rules/` directory files are **not tracked by git** (only a `.gitkeep` is committed). Changes to rule files take effect immediately on disk — there is nothing to commit or push after editing them.
 
+**Corollary for agents:** After adding or modifying rules, do **not** run `git add`, `git commit`, or `git push` for rule changes — there is nothing to commit. The only tracked files in this repo are engine code, TUI code, tests, and configuration (e.g. `.claude/`). If an agent workflow says "commit your changes", that applies only to those tracked files, not to `rules/`.
+
 ## Commit and Push Policy
 
 **After completing any change to tracked files (`summary.py`, `tui-tests.sh`, `tui-tests/`, `run-tests.sh`, `engine-tests.sh`, `.claude/CLAUDE.md`, etc.), commit and push immediately — without asking, without waiting.** This is mandatory, not optional. Do not finish a task without committing. Do not ask "should I commit?" — just do it.
