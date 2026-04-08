@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # PreToolUse hook — rule-file based permission engine.
 #
@@ -11,6 +11,11 @@
 # Special return "recurse:<cmd>" restarts the pipeline from rule 0 with
 # a new command (e.g. after unwrapping a wrapper like xargs).
 #
+
+if (( BASH_VERSINFO[0] < 4 )); then
+  printf 'unfence requires bash 4+; found %s. Install via Homebrew: brew install bash\n' "$BASH_VERSION" >&2
+  exit 1
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RULES_DIR="${UNFENCE_RULES_DIR:-$SCRIPT_DIR/../rules}"

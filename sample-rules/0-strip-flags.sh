@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Transparent-flag stripping rule.
 #
 # Some flags modify execution context (e.g. which directory to run in) without

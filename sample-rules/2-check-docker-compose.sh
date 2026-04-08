@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Special case: docker-compose (hyphenated) with allowed subcommands.
 # docker compose (space) is already covered by the ALLOW list in 1-lists.sh.
 

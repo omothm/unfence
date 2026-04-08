@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Stop hook: detect new Bash permissions.allow entries in settings.local.json
 # and spawn a claude session (with hooks disabled) to translate them into

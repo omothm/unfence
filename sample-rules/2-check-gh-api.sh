@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Special case: gh api read-only GET requests.
 # Blocks explicit non-GET methods and mutation flags (-f, --raw-field, --input).
 

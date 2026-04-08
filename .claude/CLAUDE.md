@@ -218,6 +218,16 @@ Steps every time:
 
 After any change that affects user-visible behavior (engine logic, TUI features, setup steps, sample-rule patterns), check `README.md` for stale descriptions and update them. Keep the README lean — fix outdated information, don't expand it. The README is the only user-facing doc; CLAUDE.md is internal.
 
+## Bash Version Requirement
+
+All shell scripts in this project require **bash 4.0 or later**. Features in active use that are unavailable in bash 3.x include `mapfile`, `${var^^}` case modifiers, and `declare -A` associative arrays. Backporting to bash 3.2 would require significant rewrites and is not a goal.
+
+**Shebang convention**: All tracked `.sh` files use `#!/usr/bin/env bash` (not `#!/bin/bash`). On macOS, `/bin/bash` is frozen at 3.2 for licensing reasons; `#!/usr/bin/env bash` uses whichever `bash` is first in `PATH` instead. Install a modern bash via Homebrew (`brew install bash`) if needed.
+
+**Consistency rule**: The PreToolUse hook, the TUI eval (`summary.py`), and the test runner must all resolve to the same `bash` binary. The hook is invoked via its shebang — `#!/usr/bin/env bash` ensures it picks up the same PATH bash that `summary.py` calls directly. Do not use `#!/bin/bash` in any new script.
+
+**Version guard**: `hooks/unfence.sh` and `run-tests.sh` check `BASH_VERSINFO[0] < 4` at startup and exit with an error if the requirement is not met.
+
 ## Rule Count Discipline
 
 When a user requests a modification or addition of a rule, **first evaluate whether an existing rule is a better fit** for expansion or contraction. Suggest expanding an existing rule if it covers the same domain or command family — keep the total rule count lean. Only create a new rule file if the modification is genuinely distinct in logic or domain. After any change, automatically run `./summary.py` to show the updated state, highlighting what changed.

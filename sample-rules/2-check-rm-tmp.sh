@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Special case: rm / rmdir / truncate targeting only safe paths (/tmp/ or ~/.claude/).
 # rm -rf is already in the DENY list and will be caught before this rule.
 

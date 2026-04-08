@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Checker rule: curl — allow GET/HEAD, defer anything that sends data.
 #
 # A command-specific checker goes beyond prefix matching by inspecting flags

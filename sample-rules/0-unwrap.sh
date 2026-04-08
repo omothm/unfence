@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Unwrapper rule: eval / shell -c / xargs / timeout / time
 #
 # The engine sees "xargs git status" as a single command and cannot classify it.

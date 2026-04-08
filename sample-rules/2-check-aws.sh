@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Special case: AWS read-only commands.
 # Allows any aws command that contains a read-only verb token.
 

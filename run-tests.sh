@@ -5,6 +5,11 @@
 # Run: bash run-tests.sh  (from the project root)
 #
 
+if (( BASH_VERSINFO[0] < 4 )); then
+  printf 'run-tests.sh requires bash 4+; found %s. Install via Homebrew: brew install bash\n' "$BASH_VERSION" >&2
+  exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export ENGINE="$SCRIPT_DIR/hooks/unfence.sh"
 # RULES_SUITE selects which rules directory to test (default: rules).

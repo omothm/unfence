@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # List rule: DENY / ASK / ALLOW prefix matching with specificity.
 #
 # Rules are matched by token prefix. The most-specific match (most tokens) wins,

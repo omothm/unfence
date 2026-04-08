@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Special case: any command run solely to query its version or usage.
 # Allows if --version or --help appears anywhere in the arguments.
 

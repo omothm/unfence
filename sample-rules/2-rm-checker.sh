@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Checker rule: rm — deny recursive+forced delete regardless of flag order/style.
 #
 # Handles all flag combinations by looking for any recursive flag AND any force
