@@ -204,9 +204,14 @@ else
 fi
 echo "═══════════════════════════════════════════════════════════════════"
 
+# Highlighter tests (Python)
+echo ""
+HIGHLIGHT_EXIT=0
+python3 "$SCRIPT_DIR/highlighter-tests.py" || HIGHLIGHT_EXIT=$?
+
 # TUI tests
 echo ""
 TUI_EXIT=0
 bash "$SCRIPT_DIR/tui-tests.sh" || TUI_EXIT=$?
 
-exit $(( FAIL + TUI_EXIT ))
+exit $(( FAIL + HIGHLIGHT_EXIT + TUI_EXIT ))

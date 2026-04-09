@@ -795,7 +795,7 @@ def _wrap_segs(segs: list, width: int, indent_width: int = 0) -> list:
         lines.append(cur)
     return lines if lines else [[]]
 
-def scan_multiline_string_lines(cmd: str) -> tuple:
+def scan_multiline_string_lines(cmd: str, heredoc_body_set=None) -> tuple:
     """
     Return (body, closings) where:
     - body: set of line indices (0-based) that are entirely inside a
@@ -804,12 +804,24 @@ def scan_multiline_string_lines(cmd: str) -> tuple:
       lines that terminate a multi-line string.  The prefix up to and
       including that column is string content; everything after is shell.
     The opening line (which starts the unclosed quote) is in neither set.
+
+    heredoc_body_set: set of line indices that are heredoc body content
+    (not shell code).  Apostrophes and quotes inside these lines must not
+    open a string context that bleeds into subsequent lines.  If None,
+    the set is computed automatically via scan_heredoc_body_lines.
     """
+    if heredoc_body_set is None:
+        heredoc_body_set = scan_heredoc_body_lines(cmd)
     lines     = cmd.split("\n")
     body: set  = set()
     closings: dict = {}
     in_string = None   # '"' or "'" when inside an unclosed string
     for i, line in enumerate(lines):
+        if i in heredoc_body_set:
+            # Heredoc body is not shell code — reset any open string context
+            # so apostrophes/quotes in the body do not bleed past the heredoc.
+            in_string = None
+            continue
         if in_string:
             # Scan for the closing quote, honouring backslash escapes
             j, closed, close_col = 0, False, -1
@@ -2702,7 +2714,7 @@ class TUI:
         cmd_width      = max(1, inner - 4)   # 2 spaces indent each side
         body_lines: list = []                # list of list[(attr, text)]   [SH]
         heredoc_bodies                = scan_heredoc_body_lines(cmd)        # [SH]
-        string_bodies, str_closings   = scan_multiline_string_lines(cmd)   # [SH]
+        string_bodies, str_closings   = scan_multiline_string_lines(cmd, heredoc_bodies)  # [SH]
         for line_idx, logical in enumerate(cmd.split("\n")):                # [SH]
             if not logical.strip():
                 body_lines.append([])
