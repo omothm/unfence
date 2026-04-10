@@ -310,10 +310,10 @@ fi
 # ── Disabled check ────────────────────────────────────────────────────────────
 if [[ -f "$DISABLED_FLAG" ]]; then
   if [[ -n "$EVAL_MODE" ]]; then
-    printf '{"verdict":"allow","rule":null,"disabled":true}\n'; exit 0
+    printf '{"verdict":"defer","rule":null,"disabled":true}\n'; exit 0
   fi
-  log "DISABLED: skipping evaluation"
-  _output "allow" "unfence disabled"
+  log "DISABLED: no-op"
+  exit 0
 fi
 
 # ── EVAL_MODE: called by the summary TUI for live evaluation ──────────────────
