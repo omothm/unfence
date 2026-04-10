@@ -20,6 +20,7 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RULES_DIR="${UNFENCE_RULES_DIR:-$SCRIPT_DIR/../rules}"
 LOG_FILE="$SCRIPT_DIR/../logs/unfence.log"
+DISABLED_FLAG="${UNFENCE_CACHE_DIR:-$SCRIPT_DIR/../.claude/cache}/.disabled"
 SESSION_ID="${CLAUDE_SESSION_ID:-${PPID}}"
 MAX_RECURSE=10
 
@@ -304,6 +305,15 @@ if [[ -d "$RULES_DIR" ]]; then
     RULE_FILES+=("$f")
   done < <(find "$RULES_DIR" -maxdepth 1 -name "*.sh" ! -name "*.test.sh" -print0 \
            | sort -z)
+fi
+
+# ── Disabled check ────────────────────────────────────────────────────────────
+if [[ -f "$DISABLED_FLAG" ]]; then
+  if [[ -n "$EVAL_MODE" ]]; then
+    printf '{"verdict":"allow","rule":null,"disabled":true}\n'; exit 0
+  fi
+  log "DISABLED: skipping evaluation"
+  _output "allow" "unfence disabled"
 fi
 
 # ── EVAL_MODE: called by the summary TUI for live evaluation ──────────────────

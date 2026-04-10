@@ -11,6 +11,10 @@ LOCKFILE="/tmp/sync-permissions.lock"
 LOG="/tmp/sync-permissions.log"
 CWD="$PWD"
 
+_HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_DISABLED_FLAG="$_HOOK_DIR/../.claude/cache/.disabled"
+[[ -f "$_DISABLED_FLAG" ]] && exit 0
+
 (
   ts() { date '+%Y-%m-%d %H:%M:%S'; }
 

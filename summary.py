@@ -21,6 +21,7 @@ LOG_FILE          = PROJECT_DIR / "logs" / "unfence.log"
 CHANGE_LOG        = PROJECT_DIR / "logs" / "changes.log"
 REC_CACHE         = CACHE_DIR / ".recs.json"
 ACCEPTED_REC    = CACHE_DIR / ".accepted-recs.json"
+DISABLED_FLAG   = CACHE_DIR / ".disabled"
 SKILL_FILE      = PROJECT_DIR / ".claude" / "prompts" / "implement-recommendations.md"
 
 
@@ -1483,7 +1484,7 @@ class TUI:
             f"[p] {rec_pending} rec{'s' if rec_pending != 1 else ''}" if rec_pending else
             "[p] no recs"
         )
-        return ["[r] reload", "[ctrl+r] hard reload", "[e] eval",
+        return ["[r] reload", "[ctrl+r] hard reload", "[e] eval", "[t] toggle",
                 "[↑↓] navigate  [enter/→/1-9] detail",
                 shd_key, rec_key, "[c] changelog", "[d] deferlog", "[q] quit"]
 
@@ -1830,6 +1831,13 @@ class TUI:
         if not cmd:
             return
         self._run_eval_async(cmd, 'eval_result', highlight=True)
+
+    def toggle_enabled(self):
+        if DISABLED_FLAG.exists():
+            DISABLED_FLAG.unlink()
+        else:
+            DISABLED_FLAG.touch()
+        self._invalidate()
 
     def _add_allow_rule(self, cmd: str):
         """Spawn Claude to identify the deferring sub-command and add an allow rule."""
@@ -2231,8 +2239,14 @@ class TUI:
 
         hdr = "unfence"
         ref = f"  ↻ Updated: {refresh_ts}" if refresh_ts else ""
-        title_row = ContentLine([(A_NORMAL, " "), (A_BOLD, hdr), (A_DIM, ref)],
-                                bordered=False)
+        if DISABLED_FLAG.exists():
+            status_seg = (CP2 | A_BOLD, "  DISABLED")
+        else:
+            status_seg = (CP6 | A_BOLD, "  ENABLED")
+        title_row = ContentLine(
+            [(A_NORMAL, " "), (A_BOLD, hdr), status_seg, (A_DIM, ref)],
+            bordered=False,
+        )
 
         st = self.log_stats
         total = st['allow'] + st['deny'] + st['defer']
@@ -3467,6 +3481,8 @@ class TUI:
 
             if ev in (ord('q'), ord('Q')):
                 break
+            elif ev in (ord('t'), ord('T')):
+                self.toggle_enabled()
             elif ev in (ord('e'), ord('E')):
                 self.eval_open   = True
                 self.shadow_open = False
