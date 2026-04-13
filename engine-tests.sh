@@ -56,3 +56,11 @@ run_test "array element arithmetic value → allow"       'arr[0]=$(( 1 + 2 ))' 
 # Negative: array element with $(cmd) value — inner command must pass rules.
 # In the engine-test fixture no rule handles 'dangerous', so it defers.
 run_test "array element with subshell value → defers"   'arr[0]=$(dangerous)'                      "defer"
+
+# --- deny:<message> passthrough ---
+# Rules can return "deny:<message>" to attach a reason to the denial.
+# The engine must surface the message in permissionDecisionReason.
+# This test uses rm -rf which is in DENY in both rules/ and sample-rules/
+# without a DENY_REASONS entry, so it verifies the fallback message path.
+run_test_deny_reason "plain deny: fallback reason" \
+  'rm -rf /'  'Command matches a DENY rule'

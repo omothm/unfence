@@ -267,6 +267,12 @@ classify_single() {
         _LAST_VERDICT="$verdict"
         echo "$verdict"; return
         ;;
+      deny:*)
+        log "  -> deny  ($(basename "$rule_file"))"
+        _LAST_RULE="$(basename "$rule_file")"
+        _LAST_VERDICT="deny"
+        echo "$verdict"; return  # pass through "deny:<message>" for caller to extract reason
+        ;;
       recurse:*)
         local new_cmd="${verdict#recurse:}"
         local _recurse_rule="$(basename "$rule_file")"
@@ -339,7 +345,7 @@ if [[ -n "$EVAL_MODE" ]]; then
     v=$(cat "$_vtmp")
     r="$_LAST_RULE"
     case "$v" in
-      deny)  has_deny=true; all_allow=false; [[ -z "$deny_rule"  ]] && deny_rule="$r"  ;;
+      deny|deny:*)  has_deny=true; all_allow=false; [[ -z "$deny_rule" ]] && deny_rule="$r"  ;;
       ask)   has_ask=true;  all_allow=false; [[ -z "$ask_rule"   ]] && ask_rule="$r"   ;;
       allow) [[ -z "$allow_rule" ]] && allow_rule="$r" ;;
       *)     all_allow=false; defer_parts+=("${_LAST_DEFER_CMD:-$part}") ;;
@@ -389,6 +395,7 @@ log "INPUT $RAW_COMMAND"
 has_deny=false
 has_ask=false
 all_allow=true
+_DENY_MSG=""
 
 while IFS= read -r -d '' part; do
   part=$(echo "$part" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
@@ -397,14 +404,16 @@ while IFS= read -r -d '' part; do
   verdict=$(classify_single "$part")
 
   case "$verdict" in
-    deny)  has_deny=true; all_allow=false ;;
-    ask)   has_ask=true;  all_allow=false ;;
-    allow) ;;
-    *)     all_allow=false ;;
+    deny)        has_deny=true; all_allow=false ;;
+    deny:*)      has_deny=true; all_allow=false
+                 [[ -z "$_DENY_MSG" ]] && _DENY_MSG="${verdict#deny:}" ;;
+    ask)         has_ask=true;  all_allow=false ;;
+    allow)       ;;
+    *)           all_allow=false ;;
   esac
 done < <(split_commands "$RAW_COMMAND")
 
-if $has_deny;   then _output "deny"  "Command matches a DENY rule"; fi
+if $has_deny; then _output "deny" "${_DENY_MSG:-Command matches a DENY rule}"; fi
 if $has_ask; then
   log "=> ask (rule requested user prompt)"
   jq -n '{"hookSpecificOutput":{"hookEventName":"PreToolUse","ruleVerdict":"ask"}}'

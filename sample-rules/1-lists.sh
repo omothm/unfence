@@ -18,6 +18,13 @@ DENY=(
   "rm -rf"
 )
 
+# Optional: attach a rejection reason to any DENY entry.
+# The message is returned to Claude as permissionDecisionReason so it knows
+# why the command was blocked and can choose an alternative.
+declare -A DENY_REASONS=(
+  ["chmod 777"]="chmod 777 grants world-write access; use a more restrictive mode like 755 or 644."
+)
+
 ASK=(
   "git push"           # prompt before any push (less specific than deny rules above)
   "git commit"
@@ -208,11 +215,13 @@ matches_rule() {
 }
 count_tokens() { echo $#; }
 
-best="" best_n=0 best_p=0
+best="" best_n=0 best_p=0 best_deny_rule=""
 for rule in "${DENY[@]}";  do
   matches_rule "$rule" "${CMD_TOKENS[@]}" || continue
-  n=$(count_tokens $rule); (( n > best_n || (n == best_n && 3 > best_p) )) \
-    && best="deny"  && best_n=$n && best_p=3
+  n=$(count_tokens $rule)
+  if (( n > best_n || (n == best_n && 3 > best_p) )); then
+    best="deny" best_n=$n best_p=3 best_deny_rule="$rule"
+  fi
 done
 for rule in "${ASK[@]}";   do
   matches_rule "$rule" "${CMD_TOKENS[@]}" || continue
@@ -225,4 +234,10 @@ for rule in "${ALLOW[@]}"; do
     && best="allow" && best_n=$n && best_p=1
 done
 
-[[ -z "$best" ]] && echo defer || echo "$best"
+if [[ -z "$best" ]]; then
+  echo defer
+elif [[ "$best" == "deny" && -n "${DENY_REASONS[$best_deny_rule]:-}" ]]; then
+  echo "deny:${DENY_REASONS[$best_deny_rule]}"
+else
+  echo "$best"
+fi

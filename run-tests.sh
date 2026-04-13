@@ -144,6 +144,37 @@ run_test_with_cwd() {
 }
 export -f run_test_with_cwd
 
+# run_test_deny_reason "desc" "cmd" "expected_reason_substr"
+# Asserts verdict=deny AND permissionDecisionReason contains the given substring.
+run_test_deny_reason() {
+  local description="$1" command="$2" expected_substr="$3"
+  local seq=$(( ++_SEQ ))
+  (( TOTAL++ ))
+
+  if (( _ACTIVE >= _MAX_PARALLEL )); then
+    wait -n 2>/dev/null
+    (( _ACTIVE-- ))
+  fi
+
+  local result_file="$_TMPDIR/$seq"
+  (
+    local json output verdict reason
+    json=$(jq -n --arg cmd "$command" '{"tool_input":{"command":$cmd}}')
+    output=$(bash "$ENGINE" <<< "$json" 2>/dev/null)
+    verdict=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<< "$output" 2>/dev/null)
+    reason=$(jq -r '.hookSpecificOutput.permissionDecisionReason // empty' <<< "$output" 2>/dev/null)
+
+    if [[ "$verdict" == "deny" && "$reason" == *"$expected_substr"* ]]; then
+      printf 'P\t%s\t%s\n' "$description" "deny+reason" > "$result_file"
+    else
+      local actual="verdict=${verdict:-none} reason=${reason:-(empty)}"
+      printf 'F\t%s\t%s\t%s\n' "$description" "deny+\"$expected_substr\"" "$actual" > "$result_file"
+    fi
+  ) &
+  (( _ACTIVE++ ))
+}
+export -f run_test_deny_reason
+
 echo "═══════════════════════════════════════════════════════════════════"
 echo " unfence test suite — rules"
 echo "═══════════════════════════════════════════════════════════════════"
