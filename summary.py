@@ -55,11 +55,18 @@ def check_auto_created(rule: Path) -> bool:
         pass
     return False
 
+def uses_project_config(rule: Path) -> bool:
+    """Return True if the rule script reads $PROJECT_CONFIG."""
+    try:
+        return "PROJECT_CONFIG" in rule.read_text()
+    except Exception:
+        return False
+
 def summarize_rule(rule: Path):
     content = rule.read_text()
     prompt = (
         "Output a JSON object (no markdown) for this shell permission rule "
-        "with three keys:\n"
+        "with four keys:\n"
         '- "title": 1-3 words capturing the rule purpose\n'
         '- "summary": one sentence, max 20 words, describing what commands '
         "it matches and what verdict it returns\n"
@@ -70,7 +77,12 @@ def summarize_rule(rule: Path):
         "Cover any special logic (transparent flag stripping, recursion, sub-command checks). "
         "Be complete — do not truncate or summarise away details. Aim for 8-15 sentences. "
         "Organize into logical paragraphs separated by blank lines (\\n\\n). "
-        "Use **bold** for key terms and `backticks` for command names, flags, and code.\n\n"
+        "Use **bold** for key terms and `backticks` for command names, flags, and code.\n"
+        '- "config_schema": if the rule reads $PROJECT_CONFIG, output a multi-line string '
+        "showing the JSON shape with inline comments, e.g.: "
+        '"{\\n  \\"tool-name\\": {\\n    \\"some-array\\": [] // one-line description\\n  }\\n}". '
+        "Enumerate every key the rule actually reads with a short inline comment describing its purpose. "
+        "If the rule does NOT read $PROJECT_CONFIG, set this key to null.\n\n"
         + content
     )
     result = subprocess.run(
@@ -1082,6 +1094,7 @@ class TUI:
         self.rules        = []
         self.caches       = {}
         self.synced       = {}
+        self.config_aware = {}
         self.active       = set()
         self.last_refresh = ""
 
@@ -1252,10 +1265,12 @@ class TUI:
         rules  = get_rules()
         caches = {r.name: load_cache(r) for r in rules}
         synced = {r.name: check_auto_created(r) for r in rules}
+        config_aware = {r.name: uses_project_config(r) for r in rules}
         with self._lock:
-            self.rules  = rules
-            self.caches = {k: v for k, v in caches.items() if v}
-            self.synced = synced
+            self.rules        = rules
+            self.caches       = {k: v for k, v in caches.items() if v}
+            self.synced       = synced
+            self.config_aware = config_aware
 
     def _trigger_stale(self):
         self.log_stats = load_log_stats()
@@ -2277,6 +2292,7 @@ class TUI:
         CP1 = curses.color_pair(1)
         CP2 = curses.color_pair(2)
         CP3 = curses.color_pair(3)
+        CP4 = curses.color_pair(4)
         CP5 = curses.color_pair(5)
         CP6 = curses.color_pair(6)
         CP7 = curses.color_pair(7)
@@ -2284,13 +2300,14 @@ class TUI:
         BOT = HLine(curses.ACS_LLCORNER, curses.ACS_LRCORNER)
 
         with self._lock:
-            rules      = list(self.rules)
-            caches     = dict(self.caches)
-            synced     = dict(self.synced)
-            active     = set(self.active)
-            shadows    = dict(self.shadows)
-            highlighted = self.highlighted
-            hi_verdict  = self.hi_verdict
+            rules        = list(self.rules)
+            caches       = dict(self.caches)
+            synced       = dict(self.synced)
+            config_aware = dict(self.config_aware)
+            active       = set(self.active)
+            shadows      = dict(self.shadows)
+            highlighted  = self.highlighted
+            hi_verdict   = self.hi_verdict
 
         rule_nums = {r.name: i + 1 for i, r in enumerate(rules)}
         per_rule  = self.log_stats.get("per_rule", {})
@@ -2307,6 +2324,7 @@ class TUI:
             cache      = caches.get(name)
             is_active  = name in active
             is_synced  = synced.get(name, False)
+            has_config = config_aware.get(name, False)
             n          = idx + 1
             is_last    = idx == len(rules) - 1
             is_match   = name in highlighted if highlighted else False
@@ -2344,9 +2362,13 @@ class TUI:
                 # Rule exists but was never hit in the last 30 days
                 badge_segs += [(A_NORMAL, " "), (A_DIM, "[0|0]")]
 
+            cog_attr = title_attr if is_cursor else CP4
+            cog_segs = [(cog_attr, "⚙ ")] if has_config else []
             rule_segs = (
-                [(A_NORMAL, " "), (title_attr, f"{n}. {title}"),
-                 (A_NORMAL, " "), (A_DIM, f"[{name}]"), (A_DIM, f"  {rel}")]
+                [(A_NORMAL, " "), (title_attr, f"{n}. ")]
+                + cog_segs
+                + [(title_attr, title),
+                   (A_NORMAL, " "), (A_DIM, f"[{name}]"), (A_DIM, f"  {rel}")]
                 + badge_segs
             )
             for wrap_line in _wrap_segs(rule_segs, inner, indent_width=4):
@@ -2402,6 +2424,7 @@ class TUI:
         with self._lock:
             rules             = list(self.rules)
             caches            = dict(self.caches)
+            config_aware      = dict(self.config_aware)
             active            = set(self.active)
             per_rule          = self.log_stats.get("per_rule", {})
             detail_modifying  = self.detail_modifying
@@ -2486,6 +2509,34 @@ class TUI:
         if not detail_modifying and not summarizing:
             def _sec(label: str) -> SecLine:
                 return SecLine(label, A_DIM | A_BOLD)
+
+            # ── Config Schema (if rule reads PROJECT_CONFIG) ──────────────────
+            config_schema  = cache.get("config_schema")
+            rule_uses_cfg  = config_aware.get(name, False)
+            if rule_uses_cfg or config_schema:
+                lines.append([])
+                lines.append(_sec("Config Schema"))
+                lines.append([])
+                if config_schema:
+                    for schema_line in config_schema.split("\n"):
+                        if not schema_line.strip():
+                            lines.append([])
+                            continue
+                        avail = wrap_w - 2  # account for "  " margin
+                        if len(schema_line) <= avail:
+                            lines.append([(CP4, f"  {schema_line}")])
+                        elif " // " in schema_line:
+                            # Break at comment separator so code stays on first line
+                            code_part, comment = schema_line.split(" // ", 1)
+                            leading = len(schema_line) - len(schema_line.lstrip())
+                            cont_pfx = "  " + " " * leading + "   // "
+                            lines.append([(CP4, f"  {code_part}")])
+                            for wl in (list(word_wrap(comment, max(10, wrap_w - len(cont_pfx)))) or [comment]):
+                                lines.append([(CP4, cont_pfx + wl)])
+                        else:
+                            lines.append([(CP4, f"  {schema_line[:avail]}")])
+                else:
+                    lines.append([(A_DIM, "  (schema will appear after re-summarizing)")])
 
             recent = load_recent_rule_matches(name)
             lines.append([])
