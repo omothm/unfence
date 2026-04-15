@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+"""Configure .claude/unfence.json for the current project.
+
+Usage:
+  unfence-config --add RULE.KEY=VALUE    Append VALUE to an array field
+  unfence-config --set RULE.KEY=VALUE    Set or replace a value
+
+VALUE formats:
+  scalar string:  --set my-rule.name=hello
+  integer:        --set my-rule.count=5       (auto-detected, stored as number)
+  float:          --set my-rule.ratio=1.5
+  array append:   --add my-rule.list=item     (creates list if absent)
+  multi-append:   --add my-rule.list=[a,b,c]  (merges items into existing list)
+  replace array:  --set my-rule.list=[a,b,c]
+
+All other existing properties in .claude/unfence.json are preserved.
+"""
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+CONFIG_PATH = Path(".claude") / "unfence.json"
+
+
+def parse_path(key_path: str) -> tuple:
+    """Split 'rule.key' into (rule, key). Error if format is wrong."""
+    parts = key_path.split(".", 1)
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        sys.exit(f"Error: key must be RULE.KEY (got {key_path!r})")
+    return parts[0], parts[1]
+
+
+def parse_value(raw: str):
+    """Coerce raw string to the most specific Python type.
+
+    - JSON array literal  [...]  -> list
+    - JSON object literal {...}  -> dict
+    - Integer literal            -> int
+    - Float literal              -> float
+    - Anything else              -> str
+    """
+    stripped = raw.strip()
+    # Array literal
+    if stripped.startswith("[") and stripped.endswith("]"):
+        try:
+            v = json.loads(stripped)
+            if isinstance(v, list):
+                return v
+        except json.JSONDecodeError:
+            pass
+        # Fallback: comma-split the interior
+        inner = stripped[1:-1].strip()
+        if not inner:
+            return []
+        return [item.strip() for item in inner.split(",")]
+    # JSON object literal
+    if stripped.startswith("{"):
+        try:
+            v = json.loads(stripped)
+            if isinstance(v, dict):
+                return v
+        except json.JSONDecodeError:
+            pass
+    # Integer
+    try:
+        return int(stripped)
+    except ValueError:
+        pass
+    # Float
+    try:
+        return float(stripped)
+    except ValueError:
+        pass
+    return raw
+
+
+def load_config() -> dict:
+    if CONFIG_PATH.exists():
+        try:
+            data = json.loads(CONFIG_PATH.read_text())
+            if not isinstance(data, dict):
+                sys.exit(f"Error: {CONFIG_PATH} must contain a JSON object at the top level")
+            return data
+        except json.JSONDecodeError as e:
+            sys.exit(f"Error: {CONFIG_PATH} is not valid JSON: {e}")
+    return {}
+
+
+def save_config(cfg: dict) -> None:
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Configure .claude/unfence.json for the current project.",
+    )
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument(
+        "--add", metavar="RULE.KEY=VALUE",
+        help="Append VALUE to an array field (creates array if absent)",
+    )
+    group.add_argument(
+        "--set", metavar="RULE.KEY=VALUE",
+        help="Set a scalar field or replace an array entirely",
+    )
+    args = parser.parse_args()
+
+    op = "add" if args.add else "set"
+    raw_arg: str = args.add if args.add else args.set
+
+    if "=" not in raw_arg:
+        sys.exit(f"Error: expected RULE.KEY=VALUE, no '=' found in {raw_arg!r}")
+
+    key_path, _, raw_val = raw_arg.partition("=")
+    rule, key = parse_path(key_path)
+    value = parse_value(raw_val)
+
+    cfg = load_config()
+    rule_cfg = cfg.setdefault(rule, {})
+
+    if op == "add":
+        existing = rule_cfg.get(key)
+        if existing is None or not isinstance(existing, list):
+            # No existing array — create one
+            if isinstance(value, list):
+                rule_cfg[key] = value
+            else:
+                rule_cfg[key] = [value]
+        else:
+            # Existing is a list — merge without duplicates
+            if isinstance(value, list):
+                for item in value:
+                    if item not in existing:
+                        existing.append(item)
+            else:
+                if value not in existing:
+                    existing.append(value)
+    else:
+        # --set: always replace
+        rule_cfg[key] = value
+
+    save_config(cfg)
+
+    action = "Added to" if op == "add" else "Set"
+    print(f"{action} {rule}.{key}: {json.dumps(value)}")
+
+
+if __name__ == "__main__":
+    main()

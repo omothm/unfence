@@ -240,9 +240,14 @@ echo ""
 HIGHLIGHT_EXIT=0
 python3 "$SCRIPT_DIR/highlighter-tests.py" || HIGHLIGHT_EXIT=$?
 
+# unfence-config tests (standalone script)
+echo ""
+CONFIG_EXIT=0
+bash "$SCRIPT_DIR/unfence-config-tests.sh" || CONFIG_EXIT=$?
+
 # TUI tests
 echo ""
 TUI_EXIT=0
 bash "$SCRIPT_DIR/tui-tests.sh" || TUI_EXIT=$?
 
-exit $(( FAIL + HIGHLIGHT_EXIT + TUI_EXIT ))
+exit $(( FAIL + HIGHLIGHT_EXIT + CONFIG_EXIT + TUI_EXIT ))

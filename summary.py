@@ -66,7 +66,7 @@ def summarize_rule(rule: Path):
     content = rule.read_text()
     prompt = (
         "Output a JSON object (no markdown) for this shell permission rule "
-        "with four keys:\n"
+        "with five keys:\n"
         '- "title": 1-3 words capturing the rule purpose\n'
         '- "summary": one sentence, max 20 words, describing what commands '
         "it matches and what verdict it returns\n"
@@ -82,6 +82,12 @@ def summarize_rule(rule: Path):
         "showing the JSON shape with inline comments, e.g.: "
         '"{\\n  \\"tool-name\\": {\\n    \\"some-array\\": [] // one-line description\\n  }\\n}". '
         "Enumerate every key the rule actually reads with a short inline comment describing its purpose. "
+        "If the rule does NOT read $PROJECT_CONFIG, set this key to null.\n"
+        '- "config_keys": if the rule reads $PROJECT_CONFIG, output an array of objects — '
+        "one per config key the rule reads. Each object must have exactly two fields: "
+        '"path" (the dot-separated config key path, e.g. "salesforce.safe-orgs") and '
+        '"type" (one of "array" for scalar-value arrays, "object-array" for arrays of JSON objects, '
+        '"number" for numeric scalars, or "string" for string scalars). '
         "If the rule does NOT read $PROJECT_CONFIG, set this key to null.\n\n"
         + content
     )
@@ -1161,6 +1167,9 @@ class TUI:
         self.detail_modify_result = None    # None | "ok" | "fail: ..."
         self._detail_modify_proc  = None
 
+        # Detail config-copy flash state
+        self._detail_copy_flash_msg = None  # None | str — shown in ctrl line after copy
+
         # Eval allow-rule state (Claude adds a new allow rule)
         self.eval_allowing     = False   # Claude subprocess running
         self._eval_allow_proc  = None
@@ -1522,8 +1531,16 @@ class TUI:
     def _detail_ctrl_tokens(self) -> list[str]:
         """Token list for the detail view's normal navigation controls."""
         with self._lock:
-            rules = list(self.rules)
+            rules        = list(self.rules)
+            caches       = dict(self.caches)
         tokens = (["[←] prev", "[→] next"] if len(rules) > 1 else [])
+        # Show copy-config shortcut only when config_keys are in the cache
+        idx = min(self.detail_rule_idx, max(0, len(rules) - 1))
+        if rules:
+            cache       = caches.get(rules[idx].name) or {}
+            config_keys = cache.get("config_keys")
+            if config_keys:
+                tokens.append("[c] copy config cmd")
         return tokens + ["[x] (re-)generate", "[m] modify", "[D] delete", "[enter/esc] back"]
 
     def _eval_ctrl_lines(self, cols: int) -> list[list[tuple]]:
@@ -1586,6 +1603,8 @@ class TUI:
                 # Error message may be long — compute actual wrapped rows
                 err_content = f"{self.detail_modify_result}   [any key] dismiss"
                 return 1 + len(list(word_wrap(err_content, max(1, inner))))
+            if self._detail_copy_flash_msg is not None:
+                return self.CTRL_ROWS
             return 1 + len(self._wrap_ctrl_tokens(self._detail_ctrl_tokens(), inner))
         if self.eval_open:
             return 1 + len(self._eval_ctrl_lines(inner + 2))  # +2: unbordered uses full cols
@@ -1644,6 +1663,40 @@ class TUI:
         self.detail_open            = True
         self.detail_scroll          = 0
         self._detail_confirm_delete = False
+        self._invalidate()
+
+    def _detail_copy_cmd(self, config_keys: list) -> str:
+        """Build the unfence-config snippet from the rule's config_keys list.
+
+        Returns a newline-separated string of unfence-config invocations,
+        one per config key, using --add for array types and --set for scalars.
+        The path to unfence-config always uses ~ when inside $HOME.
+        """
+        home = str(Path.home())
+        project = str(PROJECT_DIR)
+        if project.startswith(home):
+            script = "~" + project[len(home):]
+        else:
+            script = project
+        script += "/unfence-config"
+
+        lines = []
+        for k in config_keys:
+            path  = k.get("path", "?")
+            ktype = k.get("type", "string")
+            if ktype == "array":
+                lines.append(f"{script} --add {path}=VALUE")
+            elif ktype == "object-array":
+                lines.append(f"{script} --add {path}='{{\"key\":\"value\"}}'")
+            elif ktype == "number":
+                lines.append(f"{script} --set {path}=0")
+            else:
+                lines.append(f"{script} --set {path}=VALUE")
+        return "\n".join(lines)
+
+    def _clear_detail_copy_flash(self):
+        """Called by Timer to auto-dismiss the copy flash message."""
+        self._detail_copy_flash_msg = None
         self._invalidate()
 
     def _clear_eval_input(self):
@@ -2921,6 +2974,8 @@ class TUI:
                 self._draw_item(ctrl_sep + 1, ContentLine(segs, bordered=False), cols, inner)
                 self._show_cursor(ctrl_sep + 1, len(prefix) + (cur - voff))
                 return
+            elif self._detail_copy_flash_msg is not None:
+                segs = [(CP6 | A_BOLD, f"  {self._detail_copy_flash_msg}   [any key] dismiss")]
             else:
                 lines = self._wrap_ctrl_tokens(self._detail_ctrl_tokens(), inner)
                 for i, line in enumerate(lines):
@@ -3341,6 +3396,11 @@ class TUI:
                         self._invalidate()
                     continue
 
+                if self._detail_copy_flash_msg is not None:
+                    self._detail_copy_flash_msg = None
+                    self._invalidate()
+                    continue
+
                 # Normal detail navigation
                 if ev in (27, curses.KEY_ENTER, 10, 13):
                     self.detail_open = False
@@ -3370,6 +3430,24 @@ class TUI:
                     self._invalidate()
                 elif ev in (ord('D'),):
                     self._detail_confirm_delete = True
+                    self._invalidate()
+                elif ev in (ord('c'), ord('C')):
+                    if self.detail_rule_idx < len(rules):
+                        with self._lock:
+                            cache = (self.caches or {}).get(rules[self.detail_rule_idx].name) or {}
+                        config_keys = cache.get("config_keys")
+                        if config_keys:
+                            cmd = self._detail_copy_cmd(config_keys)
+                            try:
+                                subprocess.run(["pbcopy"], input=cmd, text=True, timeout=3)
+                                n = len(config_keys)
+                                self._detail_copy_flash_msg = (
+                                    f"Copied {n} config command{'s' if n != 1 else ''} "
+                                    "to clipboard  (replace --add with --set to overwrite array)"
+                                )
+                                threading.Timer(2.0, self._clear_detail_copy_flash).start()
+                            except Exception:
+                                pass
                     self._invalidate()
                 continue  # swallow all other keys
 
