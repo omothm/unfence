@@ -232,3 +232,17 @@ All shell scripts in this project require **bash 4.0 or later**. Features in act
 ## Rule Count Discipline
 
 When a user requests a modification or addition of a rule, **first evaluate whether an existing rule is a better fit** for expansion or contraction. Suggest expanding an existing rule if it covers the same domain or command family — keep the total rule count lean. Only create a new rule file if the modification is genuinely distinct in logic or domain. After any change, automatically run `./summary.py` to show the updated state, highlighting what changed.
+
+## Claude Subprocess Logging
+
+All features that spawn a Claude subprocess via `_spawn_claude_task` write the full Claude output to a log file in `CACHE_DIR` (`.claude/cache/`). For example, `modify-{rule.name}.log`, `add-allow-rule.log`, `implement-recommendations.log`. These files persist between TUI runs.
+
+**Rule:** When adding or editing any feature that spawns a Claude subprocess, always ensure the log path is meaningful and discoverable. When debugging a failure that a user reports via screenshot, check the corresponding log file first — it contains the full Claude transcript including any error messages or JSON output.
+
+## Claude Subprocess and Protected Paths
+
+`_spawn_claude_task` spawns Claude with `--dangerously-skip-permissions` to bypass interactive permission prompts. However, Claude Code's **sensitive-file guard** operates independently and blocks writes to `~/.claude/**` regardless of that flag.
+
+**Rule:** Always pass `--add-dir str(RULES_DIR)` (or the relevant directory) to every `_spawn_claude_task` call that needs to write files. Omitting it causes writes to be silently blocked with a "Permission denied: sensitive-file guard" error that surfaces as a failure in the TUI without any indication of why.
+
+The current call in `_spawn_claude_task` already includes `--add-dir str(RULES_DIR)`. Any future subprocess that writes to a different directory must add its own `--add-dir` for that path.

@@ -1576,11 +1576,16 @@ class TUI:
                 active = set(self.active)
             idx = min(self.detail_rule_idx, max(0, len(rules) - 1))
             summarizing = bool(rules) and rules[idx].name in active
-            # Locked states always fit on one content line
+            # Most locked states always fit on one content line
             if (summarizing or self.detail_modifying
-                    or self.detail_modify_result is not None
                     or self._detail_confirm_delete or self.detail_modify_mode):
                 return self.CTRL_ROWS
+            if self.detail_modify_result is not None:
+                if self.detail_modify_result == "ok":
+                    return self.CTRL_ROWS
+                # Error message may be long — compute actual wrapped rows
+                err_content = f"{self.detail_modify_result}   [any key] dismiss"
+                return 1 + len(list(word_wrap(err_content, max(1, inner))))
             return 1 + len(self._wrap_ctrl_tokens(self._detail_ctrl_tokens(), inner))
         if self.eval_open:
             return 1 + len(self._eval_ctrl_lines(inner + 2))  # +2: unbordered uses full cols
@@ -1722,6 +1727,7 @@ class TUI:
                 ["claude", "--model", "claude-sonnet-4-6",
                  "--setting-sources", "user,project,local",
                  "--dangerously-skip-permissions",
+                 "--add-dir", str(RULES_DIR),
                  "-n", name,
                  "-p", prompt],
                 stdout=open(log_path, "w"), stderr=subprocess.STDOUT,
@@ -2888,7 +2894,16 @@ class TUI:
                 if detail_mod_result == "ok":
                     segs = [(CP6 | A_BOLD, "  Rule modified and tests passed.   [any key] dismiss")]
                 else:
-                    segs = [(CP2, f"  {detail_mod_result[:inner - 4]}   [any key] dismiss")]
+                    err_content = f"{detail_mod_result}   [any key] dismiss"
+                    err_lines = list(word_wrap(err_content, max(1, cols - 2)))
+                    if len(err_lines) > 1:
+                        for i, line in enumerate(err_lines):
+                            self._draw_item(ctrl_sep + 1 + i,
+                                            ContentLine([(CP2, "  " + line)], bordered=False),
+                                            cols, inner)
+                        self._hide_cursor()
+                        return
+                    segs = [(CP2, "  " + err_lines[0])]
             elif self._detail_confirm_delete:
                 name = rules[idx].name if rules else "?"
                 segs = [(A_NORMAL, f"  Delete {name} and its test file?   [y] confirm   [n/esc] cancel")]
