@@ -49,6 +49,7 @@ Controlled by filename. Current ordering convention:
 2. The script must read `$COMMAND` and echo a single verdict to stdout.
 3. Default to `echo defer` when the rule doesn't apply.
 4. Keep stderr silent (`2>/dev/null` is applied by the engine, but avoid noisy output).
+5. **Handle both quote styles.** When a rule extracts a quoted argument value (e.g., `-c '...'` or `-c "..."`), it must accept both single and double quotes and behave identically for both. A rule that only handles one quote style will silently miss the other. Always test the same command with both quote styles.
 
 ## Tests
 
