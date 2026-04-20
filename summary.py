@@ -23,6 +23,7 @@ REC_CACHE         = CACHE_DIR / ".recs.json"
 ACCEPTED_REC    = CACHE_DIR / ".accepted-recs.json"
 DISABLED_FLAG   = CACHE_DIR / ".disabled"
 SKILL_FILE      = PROJECT_DIR / ".claude" / "prompts" / "implement-recommendations.md"
+AUTO_ALLOW_STATE = CACHE_DIR / ".auto-allow-state.json"
 
 
 # ── Data helpers ──────────────────────────────────────────────────────────────
@@ -437,6 +438,34 @@ def rec_cache_stale() -> bool:
         return True
 
 
+def load_auto_allow_state() -> tuple:
+    """Returns (last_ts, result_dict_or_None)."""
+    try:
+        d = json.loads(AUTO_ALLOW_STATE.read_text())
+        return d.get("last_ts", ""), d.get("result")
+    except Exception:
+        return "", None
+
+
+def save_auto_allow_state(last_ts: str, result) -> None:
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        AUTO_ALLOW_STATE.write_text(json.dumps({
+            "last_ts":       last_ts,
+            "last_log_size": _log_size(),
+            "result":        result,
+        }))
+    except Exception:
+        pass
+
+
+def auto_allow_stale() -> bool:
+    """True if the log has grown since the last auto-allow analysis."""
+    try:
+        d = json.loads(AUTO_ALLOW_STATE.read_text())
+        return d.get("last_log_size", 0) != _log_size()
+    except Exception:
+        return True
 
 
 def load_deferred_commands() -> list[tuple[str, str]]:
@@ -1153,6 +1182,14 @@ class TUI:
         self._deferlog_eval_proc = None
         self.deferlog_eval_result = None  # same dict shape as eval_result
 
+        # Auto-allow analyzer state
+        self._auto_allow_gen    = 0
+        self._auto_allow_active = False
+        self._auto_allow_proc   = None
+        _aa_last_ts, _aa_result = load_auto_allow_state()
+        self._auto_allow_last_ts = _aa_last_ts
+        self._auto_allow_result  = _aa_result
+
         # Rule detail pane state
         self.detail_open            = False
         self.detail_rule_idx        = 0
@@ -1206,6 +1243,8 @@ class TUI:
         self.recs, self._rec_dismissed, self._rec_last_ts = load_rec_cache()
         if rec_cache_stale():
             self._load_recs()
+        if auto_allow_stale():
+            self._load_auto_allow()
 
     # ── Key reading ───────────────────────────────────────────────────────────
 
@@ -1409,6 +1448,85 @@ class TUI:
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _load_auto_allow(self):
+        if self._auto_allow_active:
+            return
+        if not auto_allow_stale():
+            return
+
+        with self._lock:
+            self._auto_allow_gen += 1
+            gen     = self._auto_allow_gen
+            last_ts = self._auto_allow_last_ts
+            self._auto_allow_active = True
+        self._invalidate()
+
+        def work(gen=gen, last_ts=last_ts):
+            new_deferred, new_ts = _parse_deferred_commands(after_ts=last_ts)
+            to_analyze = {cmd for cmd in new_deferred if _engine_verdict(cmd) != "allow"}
+
+            with self._lock:
+                if self._auto_allow_gen == gen:
+                    self._auto_allow_last_ts = new_ts
+
+            if not to_analyze:
+                with self._lock:
+                    if self._auto_allow_gen == gen:
+                        self._auto_allow_active = False
+                save_auto_allow_state(new_ts, self._auto_allow_result)
+                self._invalidate()
+                return
+
+            cmds_list = "\n".join(f"  - {c}" for c in sorted(to_analyze))
+            prompt = (
+                f"New deferred commands to analyze:\n{cmds_list}\n\n"
+                "Classify each command and add safe ones to the unfence allow rules. "
+                "Output exactly one JSON line: {\"added\": [...], \"skipped\": [...]}"
+            )
+            log_path = CACHE_DIR / "auto-allow-analyzer.log"
+
+            def on_done():
+                with self._lock:
+                    result = self._auto_allow_result
+                    last_ts_now = self._auto_allow_last_ts
+                save_auto_allow_state(last_ts_now, result)
+                self._load_rules()
+                self._trigger_stale()
+
+            ok = self._spawn_claude_task(
+                log_path, prompt,
+                name="auto-allow-analyzer",
+                proc_attr="_auto_allow_proc",
+                active_attr="_auto_allow_active",
+                result_attr="_auto_allow_result",
+                agent="auto-allow-analyzer",
+                on_done=on_done,
+            )
+            if not ok:
+                with self._lock:
+                    if self._auto_allow_gen == gen:
+                        self._auto_allow_active = False
+                self._invalidate()
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _auto_allow_status_segs(self) -> list:
+        A_DIM    = curses.A_DIM
+        A_NORMAL = curses.A_NORMAL
+        with self._lock:
+            active = self._auto_allow_active
+            result = self._auto_allow_result
+        label = [(A_DIM, "  Auto-Allow: ")]
+        if active:
+            return label + [(A_NORMAL, "[analyzing\u2026]")]
+        if result is None:
+            return label + [(A_DIM, "Analysis not run")]
+        added = result.get("added") or []
+        if added:
+            s = ", ".join(added[:3]) + (f" +{len(added)-3} more" if len(added) > 3 else "")
+            return label + [(A_NORMAL, f"Added: {s}")]
+        return label + [(A_DIM, "Analyzed, no safe commands to add")]
+
     def _process_recs(self):
         with self._lock:
             accepted = set(self._rec_accepted)
@@ -1456,6 +1574,7 @@ class TUI:
         self._trigger_stale()
         self._load_shadows()
         self._load_recs()
+        self._load_auto_allow()
         self._invalidate()
 
     def hard_reload(self):
@@ -1492,25 +1611,30 @@ class TUI:
     def _main_ctrl_tokens(self) -> list[str]:
         """Build the key-token list for the main view controls row."""
         with self._lock:
-            shadow_active  = self.shadow_active
-            shadow_count   = sum(len(v) for v in self.shadows.values())
-            rec_analyzing  = self.rec_analyzing
-            rec_pending    = len([r for r in self.recs if r["pattern"] not in self._rec_dismissed])
-            rec_processing = self.rec_processing
+            shadow_active      = self.shadow_active
+            shadow_count       = sum(len(v) for v in self.shadows.values())
+            rec_analyzing      = self.rec_analyzing
+            rec_pending        = len([r for r in self.recs if r["pattern"] not in self._rec_dismissed])
+            rec_processing     = self.rec_processing
+            aa_active          = self._auto_allow_active
         shd_key = (
-            "[analyzing shadows…]" if shadow_active else
+            "[analyzing shadows\u2026]" if shadow_active else
             f"[s] {shadow_count} shadow{'s' if shadow_count != 1 else ''}" if shadow_count else
             "[s] no shadows"
         )
         rec_key = (
-            "[implementing…]" if rec_processing else
-            "[analyzing recs…]" if rec_analyzing else
+            "[implementing\u2026]" if rec_processing else
+            "[analyzing recs\u2026]" if rec_analyzing else
             f"[p] {rec_pending} rec{'s' if rec_pending != 1 else ''}" if rec_pending else
             "[p] no recs"
         )
-        return ["[r] reload", "[ctrl+r] hard reload", "[e] eval", "[t] toggle",
-                "[↑↓] navigate  [enter/→/1-9] detail",
-                shd_key, rec_key, "[c] changelog", "[d] deferlog", "[q] quit"]
+        tokens = ["[r] reload", "[ctrl+r] hard reload", "[e] eval", "[t] toggle",
+                  "[↑↓] navigate  [enter/→/1-9] detail",
+                  shd_key, rec_key]
+        if aa_active:
+            tokens.append("[auto-allow: analyzing\u2026]")
+        tokens += ["[c] changelog", "[d] deferlog", "[q] quit"]
+        return tokens
 
     def _wrap_ctrl_tokens(self, tokens: list[str], inner: int) -> list[str]:
         """Greedily pack tokens into lines that fit within inner width (2-char indent)."""
@@ -1759,6 +1883,7 @@ class TUI:
         on_start=None,
         parse_result=None,
         on_done=None,
+        agent: str | None = None,
     ) -> bool:
         """Spawn a Claude subprocess and poll it in a background thread.
 
@@ -1772,17 +1897,27 @@ class TUI:
             parse_result: Callable(lines: list[str]) -> result value.
                           Default: last JSON line parsed as dict.
             on_done:      Callable() run after state is cleared, before _invalidate().
+            agent:        If set, use --agent <name> instead of --model + -n <name>.
 
         Returns True if the process was successfully spawned.
         """
         try:
+            if agent:
+                cmd = ["claude",
+                       "--setting-sources", "user,project,local",
+                       "--dangerously-skip-permissions",
+                       "--add-dir", str(RULES_DIR),
+                       "--agent", agent,
+                       "-p", prompt]
+            else:
+                cmd = ["claude", "--model", "claude-sonnet-4-6",
+                       "--setting-sources", "user,project,local",
+                       "--dangerously-skip-permissions",
+                       "--add-dir", str(RULES_DIR),
+                       "-n", name,
+                       "-p", prompt]
             proc = subprocess.Popen(
-                ["claude", "--model", "claude-sonnet-4-6",
-                 "--setting-sources", "user,project,local",
-                 "--dangerously-skip-permissions",
-                 "--add-dir", str(RULES_DIR),
-                 "-n", name,
-                 "-p", prompt],
+                cmd,
                 stdout=open(log_path, "w"), stderr=subprocess.STDOUT,
                 cwd=str(PROJECT_DIR),
             )
@@ -2808,7 +2943,7 @@ class TUI:
 
         # ── Ctrl rows at bottom ────────────────────────────────────────────────
         ctrl_lines = self._deferlog_ctrl_lines(cols)
-        ctrl_rows  = 1 + len(ctrl_lines)   # sep + content lines
+        ctrl_rows  = 3 + len(ctrl_lines)   # aa_sep + aa_line + bottom + key lines
 
         content_top  = 3
         content_rows = rows - ctrl_rows - content_top
@@ -2818,11 +2953,7 @@ class TUI:
         # ── Timestamp row ──────────────────────────────────────────────────────
         if not entries:
             self._draw_item(content_top, ContentLine([(A_DIM, "  No deferred commands in log.")]), cols, inner)
-            # draw ctrl
-            ctrl_sep = rows - ctrl_rows
-            self._draw_item(ctrl_sep, HLine(curses.ACS_LLCORNER, curses.ACS_LRCORNER), cols, inner)
-            for i, segs in enumerate(ctrl_lines):
-                self._draw_item(ctrl_sep + 1 + i, ContentLine(segs, bordered=False), cols, inner)
+            self._draw_deferlog_footer(rows, cols, inner, ctrl_lines)
             return
 
         ts, cmd = entries[cursor]
@@ -2881,10 +3012,26 @@ class TUI:
             self._draw_item(body_top + i, item, cols, inner)
 
         # ── Controls ───────────────────────────────────────────────────────────
-        ctrl_sep = rows - ctrl_rows
-        self._draw_item(ctrl_sep, HLine(curses.ACS_LLCORNER, curses.ACS_LRCORNER), cols, inner)
+        self._draw_deferlog_footer(rows, cols, inner, ctrl_lines)
+
+    def _draw_deferlog_footer(self, rows, cols, inner, ctrl_lines):
+        """Draw the auto-allow status section and key hints at the bottom of deferlog view.
+
+        Layout (ctrl_rows = 3 + len(ctrl_lines)):
+          aa_sep  = rows - ctrl_rows       ├────────────────┤  (LTEE/RTEE)
+          aa_line = aa_sep + 1             │  Auto-Allow: … │
+          bottom  = aa_sep + 2             └────────────────┘  (LLCORNER/LRCORNER)
+          hints   = bottom + 1 + i         [e] eval  [c] copy…  (bordered=False)
+        """
+        ctrl_rows = 3 + len(ctrl_lines)
+        aa_sep    = rows - ctrl_rows
+        aa_line   = aa_sep + 1
+        bottom    = aa_sep + 2
+        self._draw_item(aa_sep,  HLine(curses.ACS_LTEE,     curses.ACS_RTEE),     cols, inner)
+        self._draw_item(aa_line, ContentLine(self._auto_allow_status_segs()),      cols, inner)
+        self._draw_item(bottom,  HLine(curses.ACS_LLCORNER, curses.ACS_LRCORNER), cols, inner)
         for i, segs in enumerate(ctrl_lines):
-            self._draw_item(ctrl_sep + 1 + i, ContentLine(segs, bordered=False), cols, inner)
+            self._draw_item(bottom + 1 + i, ContentLine(segs, bordered=False), cols, inner)
 
     def _deferlog_ctrl_lines(self, cols: int) -> list[list[tuple]]:
         A_DIM = curses.A_DIM
@@ -3726,11 +3873,12 @@ def main(stdscr):
     finally:
         disable_terminal_protocols()
         with tui._lock:
-            shadow_proc  = tui._shadow_proc
-            rec_proc     = tui._rec_proc
-            allow_proc   = tui._eval_allow_proc
-            modify_proc  = tui._detail_modify_proc
-        for proc in (shadow_proc, rec_proc, allow_proc, modify_proc):
+            shadow_proc     = tui._shadow_proc
+            rec_proc        = tui._rec_proc
+            allow_proc      = tui._eval_allow_proc
+            modify_proc     = tui._detail_modify_proc
+            auto_allow_proc = tui._auto_allow_proc
+        for proc in (shadow_proc, rec_proc, allow_proc, modify_proc, auto_allow_proc):
             if proc is not None:
                 try:
                     proc.terminate()

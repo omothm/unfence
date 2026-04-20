@@ -106,6 +106,12 @@ print(max(os.stat(f).st_mtime for f in files) if files else 0)
     jq -n --argjson mtime "$log_mtime" --argjson size "$log_sz" \
        '{"mtime": $mtime, "size": $size, "counts": {"allow":0,"deny":0,"defer":0,"per_rule":{}}}' \
        > "$cache/.log-stats.json"
+
+    # Pre-populate auto-allow state so _load_auto_allow() skips analysis on start.
+    # last_log_size = current actual log size → auto_allow_stale() returns False.
+    jq -n --argjson sz "$log_size" \
+       '{"last_ts": "", "last_log_size": $sz, "result": null}' \
+       > "$cache/.auto-allow-state.json"
 }
 
 _tui_fixture_teardown() {
@@ -138,6 +144,28 @@ tui_start_sized() {
     # Use tui_wait_for (full screen) rather than tui_wait_for_ctrl (last 2 lines)
     # because at narrow widths the ctrl block can wrap to many rows, pushing
     # "navigate" above the last 2 lines that tui_ctrl_line captures.
+    tui_wait_for "navigate" 50 \
+        || { echo "ERROR: TUI did not render initial view within 5s" >&2; exit 1; }
+}
+
+# tui_start_with_aa_state RESULT_JSON — start TUI with a pre-populated auto-allow
+# state file containing the given result JSON. The last_log_size is set to the
+# current log size so auto_allow_stale() returns False (suppressing real analysis).
+# Pass 'null' for result to simulate the initial "Analysis not run" state.
+tui_start_with_aa_state() {
+    local result_json="$1"
+    local unfence_dir; unfence_dir="$(dirname "$TUI_SCRIPT")"
+    local log_file="$unfence_dir/logs/unfence.log"
+    local log_size=0
+    [[ -f "$log_file" ]] && log_size=$(wc -c < "$log_file" | tr -d ' ')
+    _tui_fixture_setup
+    jq -n --argjson result "$result_json" --argjson sz "$log_size" \
+       '{"last_ts": "", "last_log_size": $sz, "result": $result}' \
+       > "$_TUI_FIXTURE_DIR/cache/.auto-allow-state.json"
+    tmux new-session -d -s "$SESSION" \
+        "env UNFENCE_RULES_DIR='$_TUI_FIXTURE_DIR/rules' \
+             UNFENCE_CACHE_DIR='$_TUI_FIXTURE_DIR/cache' python3 $TUI_SCRIPT" 2>/dev/null \
+        || { echo "ERROR: could not create tmux session" >&2; exit 1; }
     tui_wait_for "navigate" 50 \
         || { echo "ERROR: TUI did not render initial view within 5s" >&2; exit 1; }
 }
