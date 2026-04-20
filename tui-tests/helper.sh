@@ -112,6 +112,13 @@ print(max(os.stat(f).st_mtime for f in files) if files else 0)
     jq -n --argjson sz "$log_size" \
        '{"last_ts": "", "last_log_size": $sz, "result": null}' \
        > "$cache/.auto-allow-state.json"
+
+    # Pre-populate deferred-commands cache (.deferred-commands.json) with empty
+    # entries so the deferlog view shows nothing. Cache key = (mtime, size) of
+    # unfence.log — must match the real log so the cache is not considered stale.
+    jq -n --argjson mtime "$log_mtime" --argjson sz "$log_sz" \
+       '{"mtime": $mtime, "size": $sz, "entries": []}' \
+       > "$cache/.deferred-commands.json"
 }
 
 _tui_fixture_teardown() {

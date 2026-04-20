@@ -81,6 +81,20 @@ Edit the rule file(s). Follow the existing style:
 - Keep entries alphabetically or logically ordered within their group.
 - Do not reformat unrelated code.
 
+After editing each rule file, log every added command to the changelog so it appears
+in the TUI's changelog view and in the affected rule's "Recent Changes" section:
+
+```bash
+python3 ~/.claude/unfence/summary.py --log AA <rule_file_basename> "Auto-allowed: <cmd_pattern>"
+```
+
+For example, if you add `git status` to `1-lists.sh`:
+```bash
+python3 ~/.claude/unfence/summary.py --log AA 1-lists.sh "Auto-allowed: git status"
+```
+
+Log one entry per added command pattern. Do not log skipped commands.
+
 ## Step 5 — Write / update tests
 
 Every rule file change requires corresponding test changes in its `*.test.sh`:

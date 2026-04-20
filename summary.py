@@ -1510,9 +1510,10 @@ class TUI:
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _auto_allow_status_segs(self) -> list:
+    def _auto_allow_status_segs(self, current_cmd: str = "") -> list:
         A_DIM    = curses.A_DIM
         A_NORMAL = curses.A_NORMAL
+        CP5 = curses.color_pair(5)   # blue — auto-allow added
         with self._lock:
             active = self._auto_allow_active
             result = self._auto_allow_result
@@ -1521,6 +1522,19 @@ class TUI:
             return label + [(A_NORMAL, "[analyzing\u2026]")]
         if result is None:
             return label + [(A_DIM, "Analysis not run")]
+
+        if current_cmd:
+            tokens  = current_cmd.strip().split()
+            pattern = " ".join(tokens[:2]) if len(tokens) >= 2 else (tokens[0] if tokens else current_cmd)
+            added   = result.get("added") or []
+            skipped = result.get("skipped") or []
+            if pattern in added:
+                return label + [(CP5, "Added to rules")]
+            if pattern in skipped:
+                return label + [(A_DIM, "Skipped \u2014 not safe to auto-allow")]
+            return label + [(A_DIM, "Not in current analysis batch")]
+
+        # No current command (empty deferlog) — global fallback
         added = result.get("added") or []
         if added:
             s = ", ".join(added[:3]) + (f" +{len(added)-3} more" if len(added) > 3 else "")
@@ -1778,6 +1792,7 @@ class TUI:
             "REC":  curses.color_pair(1),    # yellow — recommendation
             "EVAL": curses.color_pair(4),    # cyan — eval pane
             "DEL":  curses.color_pair(2),    # red — deletion
+            "AA":   curses.color_pair(5),    # blue — auto-allow analyzer
         }.get(source, curses.A_NORMAL)
 
     def _open_detail(self, idx: int):
@@ -3023,13 +3038,16 @@ class TUI:
           bottom  = aa_sep + 2             └────────────────┘  (LLCORNER/LRCORNER)
           hints   = bottom + 1 + i         [e] eval  [c] copy…  (bordered=False)
         """
-        ctrl_rows = 3 + len(ctrl_lines)
-        aa_sep    = rows - ctrl_rows
-        aa_line   = aa_sep + 1
-        bottom    = aa_sep + 2
-        self._draw_item(aa_sep,  HLine(curses.ACS_LTEE,     curses.ACS_RTEE),     cols, inner)
-        self._draw_item(aa_line, ContentLine(self._auto_allow_status_segs()),      cols, inner)
-        self._draw_item(bottom,  HLine(curses.ACS_LLCORNER, curses.ACS_LRCORNER), cols, inner)
+        ctrl_rows   = 3 + len(ctrl_lines)
+        aa_sep      = rows - ctrl_rows
+        aa_line     = aa_sep + 1
+        bottom      = aa_sep + 2
+        entries     = self.deferlog_entries
+        cursor      = self.deferlog_cursor
+        current_cmd = entries[cursor][1] if entries and 0 <= cursor < len(entries) else ""
+        self._draw_item(aa_sep,  HLine(curses.ACS_LTEE,     curses.ACS_RTEE),                    cols, inner)
+        self._draw_item(aa_line, ContentLine(self._auto_allow_status_segs(current_cmd)),          cols, inner)
+        self._draw_item(bottom,  HLine(curses.ACS_LLCORNER, curses.ACS_LRCORNER),                cols, inner)
         for i, segs in enumerate(ctrl_lines):
             self._draw_item(bottom + 1 + i, ContentLine(segs, bordered=False), cols, inner)
 
