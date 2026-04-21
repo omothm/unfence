@@ -209,6 +209,46 @@ def test_interleaved_pids():
     ok("interleaved_pids")
 
 
+def test_multiline_input_command():
+    """INPUT spanning multiple log lines — full command hash must match."""
+    # The log function writes `printf '[ts] [pid] %s\n' "INPUT $cmd"` in one call.
+    # When cmd contains newlines, the result is:
+    #   [ts] [pid] INPUT first line
+    #   second line
+    #   third line
+    #   [ts] [pid]   classify[0]: ...
+    # The continuation lines have no [ts][pid] prefix.
+    cmd = "type aws 2>&1; echo ---\necho PATH\necho done"
+    write_log([
+        f"[2026-04-21 10:00:01] [99] INPUT {cmd.splitlines()[0]}",
+        cmd.splitlines()[1],
+        cmd.splitlines()[2],
+        "[2026-04-21 10:00:01] [99]   classify[0]: type aws",
+        "[2026-04-21 10:00:01] [99]   -> defer (no rule decided)",
+        "[2026-04-21 10:00:01] [99]   classify[0]: echo ---",
+        "[2026-04-21 10:00:01] [99]   -> allow  (1-lists.sh)",
+        "[2026-04-21 10:00:01] [99]   classify[0]: echo PATH",
+        "[2026-04-21 10:00:01] [99]   -> allow  (1-lists.sh)",
+        "[2026-04-21 10:00:01] [99]   classify[0]: echo done",
+        "[2026-04-21 10:00:01] [99]   -> allow  (1-lists.sh)",
+        "[2026-04-21 10:00:01] [99] => defer (some parts had no matching rule)",
+    ])
+    result, _ = _parse_entry_subs_from_log("")
+    h = _cmd_hash(cmd)
+    if not result:
+        fail("multiline_input_command", "result is empty — continuation lines not collected")
+        return
+    if h not in result:
+        found = list(result.keys())
+        fail("multiline_input_command",
+             f"full-command hash {h} not in result; found hashes: {found}")
+        return
+    if result[h] != ["type"]:
+        fail("multiline_input_command", f"expected ['type'], got {result[h]}")
+        return
+    ok("multiline_input_command")
+
+
 # ── Tests: load_auto_allow_state backfill detection ───────────────────────────
 
 
@@ -284,6 +324,7 @@ test_multiple_deferred_bases()
 test_after_ts_filters_old_entries()
 test_empty_log()
 test_interleaved_pids()
+test_multiline_input_command()
 test_missing_last_entry_subs_ts_resets_to_empty()
 test_no_entry_subs_key_resets_to_empty()
 test_valid_state_uses_last_entry_subs_ts()

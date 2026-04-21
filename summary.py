@@ -283,14 +283,20 @@ def _parse_entry_subs_from_log(after_ts: str = "") -> tuple:
                 start_idx = k + 1
                 break
 
-    pid_cmd:     dict = {}   # pid -> INPUT command string
+    pid_cmd:     dict = {}   # pid -> INPUT command string (full, multiline)
     pid_subs:    dict = {}   # pid -> [(sub_cmd, verdict)]
     pid_cur_sub: dict = {}   # pid -> current classify[0] sub (awaiting verdict)
+    _ml_pid:     str  = ""   # pid whose INPUT we are still collecting continuation lines for
 
     for line in all_lines[start_idx:]:
         m = _LOG_LINE_RE.match(line)
         if not m:
+            # Continuation line of a multiline INPUT (no [ts][pid] prefix).
+            if _ml_pid:
+                pid_cmd[_ml_pid] = pid_cmd[_ml_pid] + "\n" + line
             continue
+        # Any structured line ends multiline-INPUT collection.
+        _ml_pid = ""
         ts_val, pid, content = m.group(1), m.group(2), m.group(3)
         if ts_val and (not last_ts or ts_val > last_ts):
             last_ts = ts_val
@@ -299,6 +305,7 @@ def _parse_entry_subs_from_log(after_ts: str = "") -> tuple:
             pid_cmd[pid]     = content[6:]
             pid_subs[pid]    = []
             pid_cur_sub[pid] = ""
+            _ml_pid          = pid   # begin collecting any continuation lines
         elif content == "=> defer (some parts had no matching rule)":
             cmd = pid_cmd.get(pid, "")
             if cmd:
