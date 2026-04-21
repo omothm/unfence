@@ -240,6 +240,11 @@ echo ""
 HIGHLIGHT_EXIT=0
 python3 "$SCRIPT_DIR/highlighter-tests.py" || HIGHLIGHT_EXIT=$?
 
+# Parse-entry-subs tests (Python)
+echo ""
+PARSE_SUBS_EXIT=0
+python3 "$SCRIPT_DIR/parse-entry-subs-tests.py" || PARSE_SUBS_EXIT=$?
+
 # unfence-config tests (standalone script)
 echo ""
 CONFIG_EXIT=0
@@ -250,4 +255,4 @@ echo ""
 TUI_EXIT=0
 bash "$SCRIPT_DIR/tui-tests.sh" || TUI_EXIT=$?
 
-exit $(( FAIL + HIGHLIGHT_EXIT + CONFIG_EXIT + TUI_EXIT ))
+exit $(( FAIL + HIGHLIGHT_EXIT + PARSE_SUBS_EXIT + CONFIG_EXIT + TUI_EXIT ))

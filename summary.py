@@ -2,6 +2,7 @@
 """Auto-accept rules TUI.  ↑/↓ PgUp/PgDn Home/End  r=reload  e=evaluate  q=quit"""
 
 import curses
+import hashlib
 import json
 import os
 import re
@@ -254,6 +255,83 @@ def _engine_verdict(pattern: str) -> str:
         return "defer"
 
 
+def _cmd_hash(cmd: str) -> str:
+    """16-hex-char MD5 of cmd, used to key per-entry auto-allow state."""
+    return hashlib.md5(cmd.encode()).hexdigest()[:16]
+
+
+def _parse_entry_subs_from_log(after_ts: str = "") -> tuple:
+    """Parse log for deferred entries and return ({cmd_hash: [deferred_base_names]}, last_ts).
+
+    Only processes lines with timestamp strictly after after_ts.
+    Base names are the first token of each top-level (classify[0]) sub-command
+    whose verdict was 'defer' within a session that ended with
+    '=> defer (some parts had no matching rule)'.
+    """
+    result: dict = {}
+    last_ts = after_ts
+    try:
+        all_lines = LOG_FILE.read_text(errors="replace").splitlines()
+    except Exception:
+        return result, last_ts
+
+    start_idx = 0
+    if after_ts:
+        for k in range(len(all_lines) - 1, -1, -1):
+            ts = _ts_of(all_lines[k])
+            if ts and ts <= after_ts:
+                start_idx = k + 1
+                break
+
+    pid_cmd:     dict = {}   # pid -> INPUT command string
+    pid_subs:    dict = {}   # pid -> [(sub_cmd, verdict)]
+    pid_cur_sub: dict = {}   # pid -> current classify[0] sub (awaiting verdict)
+
+    for line in all_lines[start_idx:]:
+        m = _LOG_LINE_RE.match(line)
+        if not m:
+            continue
+        ts_val, pid, content = m.group(1), m.group(2), m.group(3)
+        if ts_val and (not last_ts or ts_val > last_ts):
+            last_ts = ts_val
+
+        if content.startswith("INPUT "):
+            pid_cmd[pid]     = content[6:]
+            pid_subs[pid]    = []
+            pid_cur_sub[pid] = ""
+        elif content == "=> defer (some parts had no matching rule)":
+            cmd = pid_cmd.get(pid, "")
+            if cmd:
+                subs = list(pid_subs.get(pid, []))
+                cur  = pid_cur_sub.get(pid, "")
+                if cur:
+                    subs.append((cur, "defer"))
+                deferred_bases = sorted({
+                    sub.split()[0]
+                    for sub, verdict in subs
+                    if verdict == "defer" and sub.split()
+                })
+                if deferred_bases:
+                    result[_cmd_hash(cmd)] = deferred_bases
+            for d in (pid_cmd, pid_subs, pid_cur_sub):
+                d.pop(pid, None)
+        else:
+            if pid not in pid_cmd:
+                continue
+            stripped = content.strip()
+            if stripped.startswith("classify[0]: "):
+                cur = pid_cur_sub.get(pid, "")
+                if cur:
+                    pid_subs.setdefault(pid, []).append((cur, "defer"))
+                pid_cur_sub[pid] = stripped[len("classify[0]: "):]
+            elif stripped.startswith("-> ") and pid_cur_sub.get(pid):
+                verdict = stripped[3:].split()[0]
+                pid_subs.setdefault(pid, []).append((pid_cur_sub[pid], verdict))
+                pid_cur_sub[pid] = ""
+
+    return result, last_ts
+
+
 def analyze_recommendations(deferred: dict, dismissed: set, on_proc=None) -> list:
     """AI analysis of deferred commands. Returns list of safe rec dicts.
     Each dict: {pattern, examples, count, rationale}
@@ -439,31 +517,46 @@ def rec_cache_stale() -> bool:
 
 
 def load_auto_allow_state() -> tuple:
-    """Returns (last_ts, result_dict_or_None)."""
+    """Returns (last_entry_subs_ts, result_dict_or_None, entry_subs_dict).
+
+    last_entry_subs_ts is the log timestamp up to which entry_subs has been
+    populated.  When the state file was written by older code (no
+    'last_entry_subs_ts' key), we reset to "" so the next run does a full
+    backfill from the beginning of the log.
+    """
     try:
         d = json.loads(AUTO_ALLOW_STATE.read_text())
-        return d.get("last_ts", ""), d.get("result")
+        if "last_entry_subs_ts" not in d:
+            # Old or poisoned state: force a full backfill so entry_subs is
+            # built from the entire log, not just from the old last_ts.
+            return "", d.get("result"), {}
+        return d.get("last_entry_subs_ts", ""), d.get("result"), d.get("entry_subs") or {}
     except Exception:
-        return "", None
+        return "", None, {}
 
 
-def save_auto_allow_state(last_ts: str, result) -> None:
+def save_auto_allow_state(last_ts: str, result, entry_subs: dict) -> None:
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         AUTO_ALLOW_STATE.write_text(json.dumps({
-            "last_ts":       last_ts,
-            "last_log_size": _log_size(),
-            "result":        result,
+            "last_ts":             last_ts,
+            "last_entry_subs_ts":  last_ts,
+            "last_log_size":       _log_size(),
+            "result":              result,
+            "entry_subs":          entry_subs,
         }))
     except Exception:
         pass
 
 
 def auto_allow_stale() -> bool:
-    """True if the log has grown since the last auto-allow analysis."""
+    """True if the log has grown since the last auto-allow analysis, or if
+    entry_subs has never been populated (triggers full backfill on first use)."""
     try:
         d = json.loads(AUTO_ALLOW_STATE.read_text())
-        return d.get("last_log_size", 0) != _log_size()
+        if d.get("last_log_size", 0) != _log_size():
+            return True
+        return "entry_subs" not in d
     except Exception:
         return True
 
@@ -1186,9 +1279,10 @@ class TUI:
         self._auto_allow_gen    = 0
         self._auto_allow_active = False
         self._auto_allow_proc   = None
-        _aa_last_ts, _aa_result = load_auto_allow_state()
-        self._auto_allow_last_ts = _aa_last_ts
-        self._auto_allow_result  = _aa_result
+        _aa_last_ts, _aa_result, _aa_entry_subs = load_auto_allow_state()
+        self._auto_allow_last_ts    = _aa_last_ts
+        self._auto_allow_result     = _aa_result
+        self._auto_allow_entry_subs = _aa_entry_subs
 
         # Rule detail pane state
         self.detail_open            = False
@@ -1462,34 +1556,55 @@ class TUI:
         self._invalidate()
 
         def work(gen=gen, last_ts=last_ts):
-            new_deferred, new_ts = _parse_deferred_commands(after_ts=last_ts)
-            to_analyze = {cmd for cmd in new_deferred if _engine_verdict(cmd) != "allow"}
+            new_entry_subs, new_ts = _parse_entry_subs_from_log(after_ts=last_ts)
 
             with self._lock:
-                if self._auto_allow_gen == gen:
-                    self._auto_allow_last_ts = new_ts
+                if self._auto_allow_gen != gen:
+                    return
+                merged_subs  = {**self._auto_allow_entry_subs, **new_entry_subs}
+                self._auto_allow_entry_subs = merged_subs
+                self._auto_allow_last_ts    = new_ts
+                already_added   = set((self._auto_allow_result or {}).get("added") or [])
+                current_result  = self._auto_allow_result
+
+            # Collect unique base names from new entries, skip already-added or
+            # already allowed by the engine (rule already covers them).
+            all_new_bases = {
+                base
+                for bases in new_entry_subs.values()
+                for base in bases
+            }
+            to_analyze = {
+                b for b in all_new_bases
+                if b not in already_added and _engine_verdict(b) != "allow"
+            }
 
             if not to_analyze:
                 with self._lock:
                     if self._auto_allow_gen == gen:
                         self._auto_allow_active = False
-                save_auto_allow_state(new_ts, self._auto_allow_result)
+                save_auto_allow_state(new_ts, current_result, merged_subs)
                 self._invalidate()
                 return
 
-            cmds_list = "\n".join(f"  - {c}" for c in sorted(to_analyze))
+            bases_list = "\n".join(f"  - {b}" for b in sorted(to_analyze))
             prompt = (
-                f"New deferred commands to analyze:\n{cmds_list}\n\n"
-                "Classify each command and add safe ones to the unfence allow rules. "
+                f"New deferred command base names to analyze:\n{bases_list}\n\n"
+                "For each base name, determine if that command family is safe to "
+                "auto-allow in ALL invocation forms with ANY arguments. Only add "
+                "commands that are unconditionally safe (read-only, no side effects, "
+                "fully reversible regardless of flags or arguments). Skip any command "
+                "that is only conditionally safe (e.g. safe only with specific "
+                "subcommands or flags). "
                 "Output exactly one JSON line: {\"added\": [...], \"skipped\": [...]}"
             )
             log_path = CACHE_DIR / "auto-allow-analyzer.log"
 
-            def on_done():
+            def on_done(merged_subs=merged_subs):
                 with self._lock:
-                    result = self._auto_allow_result
+                    result      = self._auto_allow_result
                     last_ts_now = self._auto_allow_last_ts
-                save_auto_allow_state(last_ts_now, result)
+                save_auto_allow_state(last_ts_now, result, merged_subs)
                 self._load_rules()
                 self._trigger_stale()
 
@@ -1510,31 +1625,39 @@ class TUI:
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _auto_allow_status_segs(self) -> list:
+    def _auto_allow_status_segs(self, cmd: str = "") -> list:
         A_DIM    = curses.A_DIM
         A_NORMAL = curses.A_NORMAL
         with self._lock:
-            result = self._auto_allow_result
+            active     = self._auto_allow_active
+            result     = self._auto_allow_result
+            entry_subs = self._auto_allow_entry_subs
+
         label = [(A_DIM, "  Auto-Allow: ")]
+
+        if active:
+            return label + [(A_DIM, "analyzing…")]
+
+        if cmd:
+            subs = entry_subs.get(_cmd_hash(cmd))
+            if subs is None:
+                return label + [(A_DIM, "Analysis not run yet")]
+            added_set = set((result or {}).get("added") or [])
+            evaluated_s = ", ".join(f"`{b}`" for b in subs) if subs else "none"
+            allowed     = [b for b in subs if b in added_set]
+            allowed_s   = ", ".join(f"`{b}`" for b in allowed) if allowed else "none"
+            return label + [(A_NORMAL, f"Evaluated {evaluated_s}. Allowed: {allowed_s}")]
+
+        # No specific entry — global fallback shown when deferlog is empty.
         if result is None:
             return label + [(A_DIM, "Analysis not run yet")]
-        added    = result.get("added") or []
-        skipped  = result.get("skipped") or []
-        all_cmds = added + skipped
-        n = len(all_cmds)
-        if n == 0:
-            eval_s = "0 commands"
-        elif n <= 3:
-            eval_s = ", ".join(f"`{c}`" for c in all_cmds)
-        else:
-            eval_s = f"{n} commands"
+        added = (result or {}).get("added") or []
         if not added:
-            allowed_s = "none"
-        elif len(added) <= 3:
-            allowed_s = ", ".join(f"`{c}`" for c in added)
-        else:
-            allowed_s = ", ".join(f"`{c}`" for c in added[:3]) + f" +{len(added)-3} more"
-        return label + [(A_NORMAL, f"Evaluated {eval_s}. Allowed: {allowed_s}")]
+            return label + [(A_DIM, "Analyzed — no safe commands found")]
+        allowed_s = ", ".join(f"`{c}`" for c in added[:3])
+        if len(added) > 3:
+            allowed_s += f" +{len(added)-3} more"
+        return label + [(A_NORMAL, f"Allowed: {allowed_s}")]
 
     def _process_recs(self):
         with self._lock:
@@ -2963,7 +3086,7 @@ class TUI:
         # ── Timestamp row ──────────────────────────────────────────────────────
         if not entries:
             self._draw_item(content_top, ContentLine([(A_DIM, "  No deferred commands in log.")]), cols, inner)
-            self._draw_deferlog_footer(rows, cols, inner, ctrl_lines)
+            self._draw_deferlog_footer(rows, cols, inner, ctrl_lines, cmd="")
             return
 
         ts, cmd = entries[cursor]
@@ -3022,9 +3145,9 @@ class TUI:
             self._draw_item(body_top + i, item, cols, inner)
 
         # ── Controls ───────────────────────────────────────────────────────────
-        self._draw_deferlog_footer(rows, cols, inner, ctrl_lines)
+        self._draw_deferlog_footer(rows, cols, inner, ctrl_lines, cmd=cmd)
 
-    def _draw_deferlog_footer(self, rows, cols, inner, ctrl_lines):
+    def _draw_deferlog_footer(self, rows, cols, inner, ctrl_lines, cmd: str = ""):
         """Draw the auto-allow status section and key hints at the bottom of deferlog view.
 
         Layout (ctrl_rows = 3 + len(ctrl_lines)):
@@ -3038,7 +3161,7 @@ class TUI:
         aa_line     = aa_sep + 1
         bottom      = aa_sep + 2
         self._draw_item(aa_sep,  HLine(curses.ACS_LTEE,     curses.ACS_RTEE),                    cols, inner)
-        self._draw_item(aa_line, ContentLine(self._auto_allow_status_segs()),                     cols, inner)
+        self._draw_item(aa_line, ContentLine(self._auto_allow_status_segs(cmd)),                  cols, inner)
         self._draw_item(bottom,  HLine(curses.ACS_LLCORNER, curses.ACS_LRCORNER),                cols, inner)
         for i, segs in enumerate(ctrl_lines):
             self._draw_item(bottom + 1 + i, ContentLine(segs, bordered=False), cols, inner)

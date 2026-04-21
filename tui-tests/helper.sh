@@ -108,9 +108,9 @@ print(max(os.stat(f).st_mtime for f in files) if files else 0)
        > "$cache/.log-stats.json"
 
     # Pre-populate auto-allow state so _load_auto_allow() skips analysis on start.
-    # last_log_size = current actual log size → auto_allow_stale() returns False.
+    # last_log_size = current log size, last_entry_subs_ts present → stale = False.
     jq -n --argjson sz "$log_size" \
-       '{"last_ts": "", "last_log_size": $sz, "result": null}' \
+       '{"last_ts": "", "last_entry_subs_ts": "", "last_log_size": $sz, "result": null, "entry_subs": {}}' \
        > "$cache/.auto-allow-state.json"
 
     # Pre-populate deferred-commands cache (.deferred-commands.json) with empty
@@ -155,20 +155,49 @@ tui_start_sized() {
         || { echo "ERROR: TUI did not render initial view within 5s" >&2; exit 1; }
 }
 
-# tui_start_with_aa_state RESULT_JSON — start TUI with a pre-populated auto-allow
-# state file containing the given result JSON. The last_log_size is set to the
-# current log size so auto_allow_stale() returns False (suppressing real analysis).
-# Pass 'null' for result to simulate the initial "Analysis not run" state.
+# _cmd_hash CMD — compute the 16-hex-char MD5 used by summary.py to key per-entry
+# auto-allow state. Must match _cmd_hash() in summary.py exactly.
+_cmd_hash() {
+    python3 -c "import hashlib,sys; print(hashlib.md5(sys.argv[1].encode()).hexdigest()[:16])" "$1"
+}
+
+# tui_start_with_aa_state RESULT_JSON [ENTRY_SUBS_JSON] [ENTRY_CMD]
+#
+# Start TUI with a pre-populated auto-allow state file.  Arguments:
+#   RESULT_JSON      — the "result" field value (e.g. '{"added":[],"skipped":["curl"]}')
+#   ENTRY_SUBS_JSON  — optional; the "entry_subs" field value (default: '{}')
+#   ENTRY_CMD        — optional; if set, a single deferlog entry with this command is
+#                      written to the deferred-commands cache so the TUI shows it.
+#
+# The last_log_size is set to the current log size so auto_allow_stale() returns
+# False (suppressing real analysis).  Pass 'null' for RESULT_JSON to simulate the
+# initial "Analysis not run" state.
 tui_start_with_aa_state() {
     local result_json="$1"
+    local entry_subs_json="${2:-{}}"
+    local entry_cmd="${3:-}"
     local unfence_dir; unfence_dir="$(dirname "$TUI_SCRIPT")"
     local log_file="$unfence_dir/logs/unfence.log"
-    local log_size=0
-    [[ -f "$log_file" ]] && log_size=$(wc -c < "$log_file" | tr -d ' ')
+    local log_size=0 log_mtime=0
+    if [[ -f "$log_file" ]]; then
+        log_size=$(wc -c < "$log_file" | tr -d ' ')
+        log_mtime=$(python3 -c "import os; print(os.stat('$log_file').st_mtime)")
+    fi
     _tui_fixture_setup
-    jq -n --argjson result "$result_json" --argjson sz "$log_size" \
-       '{"last_ts": "", "last_log_size": $sz, "result": $result}' \
+    # Write state with entry_subs (overrides what _tui_fixture_setup wrote)
+    jq -n --argjson result "$result_json" \
+           --argjson subs "$entry_subs_json" \
+           --argjson sz "$log_size" \
+       '{"last_ts": "", "last_entry_subs_ts": "", "last_log_size": $sz, "result": $result, "entry_subs": $subs}' \
        > "$_TUI_FIXTURE_DIR/cache/.auto-allow-state.json"
+    # If a specific deferlog entry was requested, overwrite the empty cache
+    if [[ -n "$entry_cmd" ]]; then
+        jq -n --argjson mtime "$log_mtime" \
+               --argjson sz "$log_size" \
+               --arg cmd "$entry_cmd" \
+           '{"mtime": $mtime, "size": $sz, "entries": [["2026-04-21 10:00:00", $cmd]]}' \
+           > "$_TUI_FIXTURE_DIR/cache/.deferred-commands.json"
+    fi
     tmux new-session -d -s "$SESSION" \
         "env UNFENCE_RULES_DIR='$_TUI_FIXTURE_DIR/rules' \
              UNFENCE_CACHE_DIR='$_TUI_FIXTURE_DIR/cache' python3 $TUI_SCRIPT" 2>/dev/null \
