@@ -31,11 +31,11 @@ Read each file. Pay special attention to:
 The prompt contains a "New deferred commands" section with a list of commands to
 analyze. For each command, classify every invocation form into one of three buckets:
 
-| Bucket | Meaning | Target list |
-|--------|---------|-------------|
-| **Always safe** | Read-only or fully reversible, no side effects on shared state | ALLOW |
-| **Conditionally safe** | Safe only with specific subcommands, flags, or absence of flags | ALLOW (specific entry) |
-| **Unsafe** | Mutates shared state, destroys data, sends network requests with side effects | ASK or DENY |
+| Bucket | Meaning | Action |
+|--------|---------|--------|
+| **Always safe** | Read-only or fully reversible, no side effects on shared state | Add to ALLOW |
+| **Conditionally safe** | Safe only with specific subcommands, flags, or absence of flags | Add specific safe form to ALLOW |
+| **Unsafe** | Mutates shared state, destroys data, sends network requests with side effects | Skip — do not add to any rule |
 
 When classifying, consider:
 - **Read-only**: does it only read or display data?
@@ -52,11 +52,10 @@ When classifying, consider:
   ASK/DENY
 - `<cmd> <sub> --flag` → combine both
 
-**If `<cmd>` has a base that is unsafe but safe subcommands exist**, you must add both:
-the safe subcommands to ALLOW (specific prefixes) and the base command to ASK (so
-unrecognized invocations still prompt rather than defer). Specificity in list-based
-rules means longer/more-specific entries win over shorter ones — a DENY/ASK entry for
-`<cmd>` will be beaten by a longer ALLOW entry for `<cmd> <safe-sub>`.
+**If `<cmd>` has a base that is unsafe but safe subcommands exist**, add ONLY the
+specific safe subcommands to ALLOW. Do NOT add the base command to ASK or DENY —
+that is outside the scope of the auto-allow analyzer. Unhandled unsafe invocations
+will continue to defer as before.
 
 ## Step 3 — Choose the right rule file
 
@@ -128,8 +127,8 @@ own line (no other JSON on that line):
 ```
 
 Where:
-- `added` — list of command patterns that were added to allow rules
-- `skipped` — list of command patterns that were skipped (unsafe or already handled)
+- `added` — list of command patterns that were added to ALLOW rules (and ONLY allow rules — never ask/deny)
+- `skipped` — list of command patterns that were skipped (unsafe, already handled, or not safe enough to auto-allow)
 
 If no commands needed to be added (all were skipped), output:
 ```json
