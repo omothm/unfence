@@ -309,7 +309,7 @@ def test_missing_last_entry_subs_ts_resets_to_empty():
         "result": {"added": [], "skipped": ["curl"]},
         "entry_subs": {},
     })
-    last_ts, result, entry_subs = _load_aa()
+    last_ts, result, entry_subs, no_more = _load_aa()
     if last_ts != "":
         fail("missing_last_entry_subs_ts_resets", f"expected '', got {last_ts!r}")
         return
@@ -323,7 +323,7 @@ def test_no_entry_subs_key_resets_to_empty():
         "last_log_size": 99999,
         "result": {"added": ["grep"], "skipped": []},
     })
-    last_ts, result, entry_subs = _load_aa()
+    last_ts, result, entry_subs, no_more = _load_aa()
     if last_ts != "":
         fail("no_entry_subs_key_resets", f"expected '', got {last_ts!r}")
         return
@@ -342,7 +342,7 @@ def test_valid_state_uses_last_entry_subs_ts():
         "result": None,
         "entry_subs": {"abc123": ["curl"]},
     })
-    last_ts, result, entry_subs = _load_aa()
+    last_ts, result, entry_subs, no_more = _load_aa()
     if last_ts != "2026-04-21 22:50:00":
         fail("valid_state_uses_last_entry_subs_ts", f"expected 22:50:00, got {last_ts!r}")
         return
@@ -365,6 +365,33 @@ def test_save_writes_last_entry_subs_ts():
     ok("save_writes_last_entry_subs_ts")
 
 
+def test_entry_no_more_defers_round_trip():
+    """save/load round-trip for entry_no_more_defers set."""
+    _save_aa("2026-04-21 23:00:00", {"added": []}, {"h1": ["git"]},
+             entry_no_more_defers={"abc", "def"})
+    _, _, _, no_more = _load_aa()
+    if no_more != {"abc", "def"}:
+        fail("entry_no_more_defers_round_trip", f"expected {{'abc','def'}}, got {no_more}")
+        return
+    ok("entry_no_more_defers_round_trip")
+
+
+def test_entry_no_more_defers_missing_defaults_empty():
+    """State without entry_no_more_defers key → empty set on load."""
+    write_state({
+        "last_ts": "2026-04-21 22:48:12",
+        "last_entry_subs_ts": "2026-04-21 22:48:12",
+        "last_log_size": 99999,
+        "result": None,
+        "entry_subs": {},
+    })
+    _, _, _, no_more = _load_aa()
+    if no_more != set():
+        fail("entry_no_more_defers_missing_defaults_empty", f"expected empty set, got {no_more}")
+        return
+    ok("entry_no_more_defers_missing_defaults_empty")
+
+
 # ── Run all tests ─────────────────────────────────────────────────────────────
 
 test_basic_defer_entry()
@@ -380,6 +407,8 @@ test_missing_last_entry_subs_ts_resets_to_empty()
 test_no_entry_subs_key_resets_to_empty()
 test_valid_state_uses_last_entry_subs_ts()
 test_save_writes_last_entry_subs_ts()
+test_entry_no_more_defers_round_trip()
+test_entry_no_more_defers_missing_defaults_empty()
 
 # Cleanup
 os.unlink(_tmp_log.name)

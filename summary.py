@@ -528,33 +528,42 @@ def rec_cache_stale() -> bool:
 
 
 def load_auto_allow_state() -> tuple:
-    """Returns (last_entry_subs_ts, result_dict_or_None, entry_subs_dict).
+    """Returns (last_entry_subs_ts, result_dict_or_None, entry_subs_dict, no_more_defers_set).
 
     last_entry_subs_ts is the log timestamp up to which entry_subs has been
     populated.  When the state file was written by older code (no
     'last_entry_subs_ts' key), we reset to "" so the next run does a full
     backfill from the beginning of the log.
+    no_more_defers_set: cmd hashes whose full command was found to be non-defer
+    at the time of analysis.
     """
     try:
         d = json.loads(AUTO_ALLOW_STATE.read_text())
         if "last_entry_subs_ts" not in d:
             # Old or poisoned state: force a full backfill so entry_subs is
             # built from the entire log, not just from the old last_ts.
-            return "", d.get("result"), {}
-        return d.get("last_entry_subs_ts", ""), d.get("result"), d.get("entry_subs") or {}
+            return "", d.get("result"), {}, set()
+        return (
+            d.get("last_entry_subs_ts", ""),
+            d.get("result"),
+            d.get("entry_subs") or {},
+            set(d.get("entry_no_more_defers") or []),
+        )
     except Exception:
-        return "", None, {}
+        return "", None, {}, set()
 
 
-def save_auto_allow_state(last_ts: str, result, entry_subs: dict) -> None:
+def save_auto_allow_state(last_ts: str, result, entry_subs: dict,
+                          entry_no_more_defers: set | None = None) -> None:
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         AUTO_ALLOW_STATE.write_text(json.dumps({
-            "last_ts":             last_ts,
-            "last_entry_subs_ts":  last_ts,
-            "last_log_size":       _log_size(),
-            "result":              result,
-            "entry_subs":          entry_subs,
+            "last_ts":              last_ts,
+            "last_entry_subs_ts":   last_ts,
+            "last_log_size":        _log_size(),
+            "result":               result,
+            "entry_subs":           entry_subs,
+            "entry_no_more_defers": list(entry_no_more_defers or []),
         }))
     except Exception:
         pass
@@ -1290,10 +1299,11 @@ class TUI:
         self._auto_allow_gen    = 0
         self._auto_allow_active = False
         self._auto_allow_proc   = None
-        _aa_last_ts, _aa_result, _aa_entry_subs = load_auto_allow_state()
-        self._auto_allow_last_ts    = _aa_last_ts
-        self._auto_allow_result     = _aa_result
-        self._auto_allow_entry_subs = _aa_entry_subs
+        _aa_last_ts, _aa_result, _aa_entry_subs, _aa_no_more = load_auto_allow_state()
+        self._auto_allow_last_ts       = _aa_last_ts
+        self._auto_allow_result        = _aa_result
+        self._auto_allow_entry_subs    = _aa_entry_subs
+        self._auto_allow_no_more_defers: set[str] = _aa_no_more
 
         # Rule detail pane state
         self.detail_open            = False
@@ -1572,33 +1582,42 @@ class TUI:
             with self._lock:
                 if self._auto_allow_gen != gen:
                     return
-                merged_subs  = {**self._auto_allow_entry_subs, **new_entry_subs}
+                merged_subs     = {**self._auto_allow_entry_subs, **new_entry_subs}
+                merged_no_more  = set(self._auto_allow_no_more_defers)
                 self._auto_allow_entry_subs = merged_subs
                 self._auto_allow_last_ts    = new_ts
                 already_added   = set((self._auto_allow_result or {}).get("added") or [])
                 current_result  = self._auto_allow_result
+                # Build hash→cmd map from deferlog so we can check full-command verdicts.
+                hash_to_cmd = {_cmd_hash(cmd): cmd for _, cmd in self.deferlog_entries}
 
-            # Collect unique base names from new entries, skip already-added or
-            # already allowed by the engine (rule already covers them).
-            all_new_bases = {
-                base
-                for bases in new_entry_subs.values()
-                for base in bases
-            }
-            to_analyze = {
-                b for b in all_new_bases
-                if b not in already_added and _engine_verdict(b) != "allow"
-            }
+            # For each new entry: if the full command no longer defers under current
+            # rules, record it and skip its bases.  Otherwise collect bases for analysis.
+            new_no_more: set[str] = set()
+            bases_to_analyze: set[str] = set()
+            for h, bases in new_entry_subs.items():
+                cmd = hash_to_cmd.get(h)
+                if cmd and _engine_verdict(cmd) != "defer":
+                    new_no_more.add(h)
+                else:
+                    for base in bases:
+                        if base not in already_added and _engine_verdict(base) != "allow":
+                            bases_to_analyze.add(base)
 
-            if not to_analyze:
+            merged_no_more |= new_no_more
+            with self._lock:
+                if self._auto_allow_gen == gen:
+                    self._auto_allow_no_more_defers = merged_no_more
+
+            if not bases_to_analyze:
                 with self._lock:
                     if self._auto_allow_gen == gen:
                         self._auto_allow_active = False
-                save_auto_allow_state(new_ts, current_result, merged_subs)
+                save_auto_allow_state(new_ts, current_result, merged_subs, merged_no_more)
                 self._invalidate()
                 return
 
-            bases_list = "\n".join(f"  - {b}" for b in sorted(to_analyze))
+            bases_list = "\n".join(f"  - {b}" for b in sorted(bases_to_analyze))
             prompt = (
                 f"New deferred command base names to analyze:\n{bases_list}\n\n"
                 "For each base name, determine if that command family is safe to "
@@ -1611,11 +1630,11 @@ class TUI:
             )
             log_path = CACHE_DIR / "auto-allow-analyzer.log"
 
-            def on_done(merged_subs=merged_subs):
+            def on_done(merged_subs=merged_subs, merged_no_more=merged_no_more):
                 with self._lock:
                     result      = self._auto_allow_result
                     last_ts_now = self._auto_allow_last_ts
-                save_auto_allow_state(last_ts_now, result, merged_subs)
+                save_auto_allow_state(last_ts_now, result, merged_subs, merged_no_more)
                 self._load_rules()
                 self._trigger_stale()
 
@@ -1640,9 +1659,10 @@ class TUI:
         A_DIM    = curses.A_DIM
         A_NORMAL = curses.A_NORMAL
         with self._lock:
-            active     = self._auto_allow_active
-            result     = self._auto_allow_result
-            entry_subs = self._auto_allow_entry_subs
+            active         = self._auto_allow_active
+            result         = self._auto_allow_result
+            entry_subs     = self._auto_allow_entry_subs
+            no_more_defers = self._auto_allow_no_more_defers
 
         label = [(A_DIM, "  Auto-Allow: ")]
 
@@ -1650,10 +1670,13 @@ class TUI:
             return label + [(A_DIM, "analyzing…")]
 
         if cmd:
-            subs = entry_subs.get(_cmd_hash(cmd))
+            h    = _cmd_hash(cmd)
+            subs = entry_subs.get(h)
             if subs is None:
                 return label + [(A_DIM, "Analysis not run yet")]
-            added_set = set((result or {}).get("added") or [])
+            if h in no_more_defers:
+                return label + [(A_DIM, "Entry no more defers")]
+            added_set   = set((result or {}).get("added") or [])
             evaluated_s = ", ".join(f"`{b}`" for b in subs) if subs else "none"
             allowed     = [b for b in subs if b in added_set]
             allowed_s   = ", ".join(f"`{b}`" for b in allowed) if allowed else "none"
