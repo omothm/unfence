@@ -249,6 +249,55 @@ def test_multiline_input_command():
     ok("multiline_input_command")
 
 
+def test_recurse_deferred_sub():
+    """Sub-command that goes through recurse: and then defers must be captured.
+
+    When the engine emits 'classify[0]: git -C <path> worktree list' followed by
+    '-> recurse: git worktree list', then 'classify[1]: git worktree list' followed
+    by '-> defer', the original classify[0] sub must be recorded as deferred.
+    Previously the parser cleared pid_cur_sub on the recurse: verdict and missed
+    the subsequent defer.
+    """
+    write_log([
+        "[2026-04-21 10:00:01] [99] INPUT git -C /some/path worktree list 2>&1 | head -5",
+        "[2026-04-21 10:00:01] [99]   classify[0]: git -C /some/path worktree list",
+        "[2026-04-21 10:00:01] [99]   -> recurse: git worktree list  (0-strip-flags.sh)",
+        "[2026-04-21 10:00:01] [99]   classify[1]: git worktree list",
+        "[2026-04-21 10:00:01] [99]   -> defer (no rule decided)",
+        "[2026-04-21 10:00:01] [99]   classify[0]: head -5",
+        "[2026-04-21 10:00:01] [99]   -> allow  (1-lists.sh)",
+        "[2026-04-21 10:00:01] [99] => defer (some parts had no matching rule)",
+    ])
+    result, _ = _parse_entry_subs_from_log("")
+    cmd = "git -C /some/path worktree list 2>&1 | head -5"
+    h = _cmd_hash(cmd)
+    if h not in result:
+        fail("recurse_deferred_sub", f"hash {h} not in result {list(result.keys())}")
+        return
+    if result[h] != ["git"]:
+        fail("recurse_deferred_sub", f"expected ['git'], got {result[h]}")
+        return
+    ok("recurse_deferred_sub")
+
+
+def test_recurse_allowed_sub_excluded():
+    """Sub-command that goes through recurse: and then allows must NOT appear as deferred."""
+    write_log([
+        "[2026-04-21 10:00:02] [99] INPUT git -C /some/path status 2>&1",
+        "[2026-04-21 10:00:02] [99]   classify[0]: git -C /some/path status",
+        "[2026-04-21 10:00:02] [99]   -> recurse: git status  (0-strip-flags.sh)",
+        "[2026-04-21 10:00:02] [99]   classify[1]: git status",
+        "[2026-04-21 10:00:02] [99]   -> allow  (1-lists.sh)",
+        "[2026-04-21 10:00:02] [99]   -> allow  (0-strip-flags.sh)  [via recurse]",
+        "[2026-04-21 10:00:02] [99] => allow  All command parts match ALLOW rules",
+    ])
+    result, _ = _parse_entry_subs_from_log("")
+    if result:
+        fail("recurse_allowed_sub_excluded", f"expected empty result, got {result}")
+    else:
+        ok("recurse_allowed_sub_excluded")
+
+
 # ── Tests: load_auto_allow_state backfill detection ───────────────────────────
 
 
@@ -325,6 +374,8 @@ test_after_ts_filters_old_entries()
 test_empty_log()
 test_interleaved_pids()
 test_multiline_input_command()
+test_recurse_deferred_sub()
+test_recurse_allowed_sub_excluded()
 test_missing_last_entry_subs_ts_resets_to_empty()
 test_no_entry_subs_key_resets_to_empty()
 test_valid_state_uses_last_entry_subs_ts()

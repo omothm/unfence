@@ -333,6 +333,10 @@ def _parse_entry_subs_from_log(after_ts: str = "") -> tuple:
                 pid_cur_sub[pid] = stripped[len("classify[0]: "):]
             elif stripped.startswith("-> ") and pid_cur_sub.get(pid):
                 verdict = stripped[3:].split()[0]
+                if verdict == "recurse:":
+                    # The engine is restarting the pipeline with a normalized command;
+                    # wait for the actual allow/defer verdict from classify[1+].
+                    continue
                 pid_subs.setdefault(pid, []).append((pid_cur_sub[pid], verdict))
                 pid_cur_sub[pid] = ""
 
