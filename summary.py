@@ -1303,7 +1303,8 @@ class TUI:
         self._auto_allow_last_ts       = _aa_last_ts
         self._auto_allow_result        = _aa_result
         self._auto_allow_entry_subs    = _aa_entry_subs
-        self._auto_allow_no_more_defers: set[str] = _aa_no_more
+        self._auto_allow_no_more_defers: set[str]  = _aa_no_more
+        self._auto_allow_analyzing_hashes: set[str] = set()
 
         # Rule detail pane state
         self.detail_open            = False
@@ -1595,24 +1596,29 @@ class TUI:
             # rules, record it and skip its bases.  Otherwise collect bases for analysis.
             new_no_more: set[str] = set()
             bases_to_analyze: set[str] = set()
+            hashes_to_analyze: set[str] = set()
             for h, bases in new_entry_subs.items():
                 cmd = hash_to_cmd.get(h)
                 if cmd and _engine_verdict(cmd) != "defer":
                     new_no_more.add(h)
                 else:
-                    for base in bases:
-                        if base not in already_added and _engine_verdict(base) != "allow":
-                            bases_to_analyze.add(base)
+                    pending = [b for b in bases
+                               if b not in already_added and _engine_verdict(b) != "allow"]
+                    if pending:
+                        bases_to_analyze.update(pending)
+                        hashes_to_analyze.add(h)
 
             merged_no_more |= new_no_more
             with self._lock:
                 if self._auto_allow_gen == gen:
-                    self._auto_allow_no_more_defers = merged_no_more
+                    self._auto_allow_no_more_defers  = merged_no_more
+                    self._auto_allow_analyzing_hashes = hashes_to_analyze
 
             if not bases_to_analyze:
                 with self._lock:
                     if self._auto_allow_gen == gen:
-                        self._auto_allow_active = False
+                        self._auto_allow_active           = False
+                        self._auto_allow_analyzing_hashes = set()
                 save_auto_allow_state(new_ts, current_result, merged_subs, merged_no_more)
                 self._invalidate()
                 return
@@ -1634,6 +1640,7 @@ class TUI:
                 with self._lock:
                     result      = self._auto_allow_result
                     last_ts_now = self._auto_allow_last_ts
+                    self._auto_allow_analyzing_hashes = set()
                 save_auto_allow_state(last_ts_now, result, merged_subs, merged_no_more)
                 self._load_rules()
                 self._trigger_stale()
@@ -1650,7 +1657,8 @@ class TUI:
             if not ok:
                 with self._lock:
                     if self._auto_allow_gen == gen:
-                        self._auto_allow_active = False
+                        self._auto_allow_active           = False
+                        self._auto_allow_analyzing_hashes = set()
                 self._invalidate()
 
         threading.Thread(target=work, daemon=True).start()
@@ -1659,19 +1667,19 @@ class TUI:
         A_DIM    = curses.A_DIM
         A_NORMAL = curses.A_NORMAL
         with self._lock:
-            active         = self._auto_allow_active
-            result         = self._auto_allow_result
-            entry_subs     = self._auto_allow_entry_subs
-            no_more_defers = self._auto_allow_no_more_defers
+            active            = self._auto_allow_active
+            result            = self._auto_allow_result
+            entry_subs        = self._auto_allow_entry_subs
+            no_more_defers    = self._auto_allow_no_more_defers
+            analyzing_hashes  = self._auto_allow_analyzing_hashes
 
         label = [(A_DIM, "  Auto-Allow: ")]
-
-        if active:
-            return label + [(A_DIM, "analyzing…")]
 
         if cmd:
             h    = _cmd_hash(cmd)
             subs = entry_subs.get(h)
+            if active and h in analyzing_hashes:
+                return label + [(A_DIM, "analyzing…")]
             if subs is None:
                 return label + [(A_DIM, "Analysis not run yet")]
             if h in no_more_defers:
@@ -1683,6 +1691,8 @@ class TUI:
             return label + [(A_NORMAL, f"Evaluated {evaluated_s}. Allowed: {allowed_s}")]
 
         # No specific entry — global fallback shown when deferlog is empty.
+        if active:
+            return label + [(A_DIM, "analyzing…")]
         if result is None:
             return label + [(A_DIM, "Analysis not run yet")]
         added = (result or {}).get("added") or []
