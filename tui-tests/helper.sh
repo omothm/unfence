@@ -110,7 +110,7 @@ print(max(os.stat(f).st_mtime for f in files) if files else 0)
     # Pre-populate auto-allow state so _load_auto_allow() skips analysis on start.
     # last_log_size = current log size, last_entry_subs_ts present → stale = False.
     jq -n --argjson sz "$log_size" \
-       '{"last_ts": "", "last_entry_subs_ts": "", "last_log_size": $sz, "result": null, "entry_subs": {}, "entry_no_more_defers": []}' \
+       '{"last_ts": "", "last_entry_subs_ts": "", "last_log_size": $sz, "result": null, "entry_subs": {}, "entry_no_more_defers": [], "analyzed_cmds": []}' \
        > "$cache/.auto-allow-state.json"
 
     # Pre-populate deferred-commands cache (.deferred-commands.json) with empty
@@ -188,7 +188,7 @@ tui_start_with_aa_state() {
     jq -n --argjson result "$result_json" \
            --argjson subs "$entry_subs_json" \
            --argjson sz "$log_size" \
-       '{"last_ts": "", "last_entry_subs_ts": "", "last_log_size": $sz, "result": $result, "entry_subs": $subs, "entry_no_more_defers": []}' \
+       '{"last_ts": "", "last_entry_subs_ts": "", "last_log_size": $sz, "result": $result, "entry_subs": $subs, "entry_no_more_defers": [], "analyzed_cmds": []}' \
        > "$_TUI_FIXTURE_DIR/cache/.auto-allow-state.json"
     # If a specific deferlog entry was requested, overwrite the empty cache
     if [[ -n "$entry_cmd" ]]; then

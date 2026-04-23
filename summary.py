@@ -528,33 +528,31 @@ def rec_cache_stale() -> bool:
 
 
 def load_auto_allow_state() -> tuple:
-    """Returns (last_entry_subs_ts, result_dict_or_None, entry_subs_dict, no_more_defers_set).
+    """Returns (last_entry_subs_ts, result, entry_subs, no_more_defers, analyzed_cmds).
 
-    last_entry_subs_ts is the log timestamp up to which entry_subs has been
-    populated.  When the state file was written by older code (no
-    'last_entry_subs_ts' key), we reset to "" so the next run does a full
-    backfill from the beginning of the log.
-    no_more_defers_set: cmd hashes whose full command was found to be non-defer
-    at the time of analysis.
+    last_entry_subs_ts: log timestamp up to which entry_subs has been populated.
+    no_more_defers: cmd hashes whose full command no longer defers at analysis time.
+    analyzed_cmds: base command names ever sent to the analyzer (added or skipped).
     """
     try:
         d = json.loads(AUTO_ALLOW_STATE.read_text())
         if "last_entry_subs_ts" not in d:
-            # Old or poisoned state: force a full backfill so entry_subs is
-            # built from the entire log, not just from the old last_ts.
-            return "", d.get("result"), {}, set()
+            # Old or poisoned state: force a full backfill.
+            return "", d.get("result"), {}, set(), set()
         return (
             d.get("last_entry_subs_ts", ""),
             d.get("result"),
             d.get("entry_subs") or {},
             set(d.get("entry_no_more_defers") or []),
+            set(d.get("analyzed_cmds") or []),
         )
     except Exception:
-        return "", None, {}, set()
+        return "", None, {}, set(), set()
 
 
 def save_auto_allow_state(last_ts: str, result, entry_subs: dict,
-                          entry_no_more_defers: set | None = None) -> None:
+                          entry_no_more_defers: set | None = None,
+                          analyzed_cmds: set | None = None) -> None:
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         AUTO_ALLOW_STATE.write_text(json.dumps({
@@ -564,6 +562,7 @@ def save_auto_allow_state(last_ts: str, result, entry_subs: dict,
             "result":               result,
             "entry_subs":           entry_subs,
             "entry_no_more_defers": list(entry_no_more_defers or []),
+            "analyzed_cmds":        list(analyzed_cmds or []),
         }))
     except Exception:
         pass
@@ -1299,11 +1298,12 @@ class TUI:
         self._auto_allow_gen    = 0
         self._auto_allow_active = False
         self._auto_allow_proc   = None
-        _aa_last_ts, _aa_result, _aa_entry_subs, _aa_no_more = load_auto_allow_state()
-        self._auto_allow_last_ts       = _aa_last_ts
-        self._auto_allow_result        = _aa_result
-        self._auto_allow_entry_subs    = _aa_entry_subs
+        _aa_last_ts, _aa_result, _aa_entry_subs, _aa_no_more, _aa_analyzed = load_auto_allow_state()
+        self._auto_allow_last_ts         = _aa_last_ts
+        self._auto_allow_result          = _aa_result
+        self._auto_allow_entry_subs      = _aa_entry_subs
         self._auto_allow_no_more_defers: set[str]  = _aa_no_more
+        self._auto_allow_analyzed_cmds: set[str]   = _aa_analyzed
         self._auto_allow_analyzing_hashes: set[str] = set()
 
         # Rule detail pane state
@@ -1583,8 +1583,9 @@ class TUI:
             with self._lock:
                 if self._auto_allow_gen != gen:
                     return
-                merged_subs     = {**self._auto_allow_entry_subs, **new_entry_subs}
-                merged_no_more  = set(self._auto_allow_no_more_defers)
+                merged_subs       = {**self._auto_allow_entry_subs, **new_entry_subs}
+                merged_no_more    = set(self._auto_allow_no_more_defers)
+                already_analyzed  = set(self._auto_allow_analyzed_cmds)
                 self._auto_allow_entry_subs = merged_subs
                 self._auto_allow_last_ts    = new_ts
                 already_added   = set((self._auto_allow_result or {}).get("added") or [])
@@ -1603,15 +1604,19 @@ class TUI:
                     new_no_more.add(h)
                 else:
                     pending = [b for b in bases
-                               if b not in already_added and _engine_verdict(b) != "allow"]
+                               if b not in already_added
+                               and b not in already_analyzed
+                               and _engine_verdict(b) != "allow"]
                     if pending:
                         bases_to_analyze.update(pending)
                         hashes_to_analyze.add(h)
 
-            merged_no_more |= new_no_more
+            merged_no_more   |= new_no_more
+            merged_analyzed   = already_analyzed | bases_to_analyze
             with self._lock:
                 if self._auto_allow_gen == gen:
-                    self._auto_allow_no_more_defers  = merged_no_more
+                    self._auto_allow_no_more_defers   = merged_no_more
+                    self._auto_allow_analyzed_cmds    = merged_analyzed
                     self._auto_allow_analyzing_hashes = hashes_to_analyze
 
             if not bases_to_analyze:
@@ -1619,7 +1624,8 @@ class TUI:
                     if self._auto_allow_gen == gen:
                         self._auto_allow_active           = False
                         self._auto_allow_analyzing_hashes = set()
-                save_auto_allow_state(new_ts, current_result, merged_subs, merged_no_more)
+                save_auto_allow_state(new_ts, current_result, merged_subs, merged_no_more,
+                                      merged_analyzed)
                 self._invalidate()
                 return
 
@@ -1636,12 +1642,14 @@ class TUI:
             )
             log_path = CACHE_DIR / "auto-allow-analyzer.log"
 
-            def on_done(merged_subs=merged_subs, merged_no_more=merged_no_more):
+            def on_done(merged_subs=merged_subs, merged_no_more=merged_no_more,
+                        merged_analyzed=merged_analyzed):
                 with self._lock:
                     result      = self._auto_allow_result
                     last_ts_now = self._auto_allow_last_ts
                     self._auto_allow_analyzing_hashes = set()
-                save_auto_allow_state(last_ts_now, result, merged_subs, merged_no_more)
+                save_auto_allow_state(last_ts_now, result, merged_subs, merged_no_more,
+                                      merged_analyzed)
                 self._load_rules()
                 self._trigger_stale()
 
