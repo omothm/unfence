@@ -105,6 +105,18 @@ Nothing in the engine or the TUI should hardcode knowledge about specific rule f
 
 **CLAUDE.md additions must follow the same principle.** This file is a shared reference — additions must be generic (concepts, conventions, invariants) and must never reference specific filenames, array names, or patterns inside `rules/`. Rule files are untracked and evolve independently; any CLAUDE.md note tied to a specific rule file will become stale or misleading.
 
+## Engine Normalization vs `0-*` Rules
+
+When a command part needs to be "unwrapped" before rules can classify it, the fix belongs in one of two places. The deciding question is: **does the construct have a command name?**
+
+**Shell syntax constructs → engine normalization (`classify_single`).**
+Grouping constructs like `{ ... }`, `( ... )`, and `[[ ... ]]` are bash language syntax, not commands. They have no `TOKENS[0]` tool name. The engine is the right place to strip them because the alternative would require every rule to guard against syntax noise it should never see. Examples already handled in the engine: brace groups `{ cmd` / `}`, subshell groups `( cmd ) [&]`, variable assignments `VAR=$(cmd)`.
+
+**Command wrappers and flag stripping → `0-*` preprocessing rules (`recurse:`).**
+When `TOKENS[0]` is a recognizable tool name that wraps another command — `eval`, `bash -c`, `xargs`, `timeout`, `time`, or a tool with transparent context flags like `git -C` — the logic belongs in a `0-*` rule. The engine should not hardcode knowledge of specific tools. Using `recurse:` restarts the full pipeline so every downstream rule sees the clean inner command automatically.
+
+**The wrong call:** if you find yourself writing a `0-*` rule that matches `TOKENS[0] == "("` or `TOKENS[0] == "{"`, that's a signal the fix belongs in the engine instead.
+
 ## Transparent Flag Stripping
 
 Flags that modify execution context (e.g. `git -C <path>`) without changing the semantic identity of the command are "transparent". Stripping them is a normalization concern that belongs in a `0-*` preprocessing rule using `recurse:` — **not in the engine**.
