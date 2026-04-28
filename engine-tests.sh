@@ -46,6 +46,19 @@ run_test "lone { → allow"           '{'                   "allow"
 run_test "bare } → allow"           '}'                   "allow"
 run_test "} with redirect → allow"  '} > /tmp/out.xml'    "allow"
 
+# --- subshell group normalization ---
+# (cmd ...) and (cmd ...) & are shell syntax, not a command.
+# The engine strips the ( ) wrapper (and optional &) so rules see the inner command.
+# Requires ) to be a separate token (space before it).
+run_test "empty subshell ( ) → allow"              '( )'                                         "allow"
+run_test "(echo hello ) → allow"                   '(echo hello )'                               "allow"
+run_test "( echo hello ) → allow"                  '( echo hello )'                              "allow"
+run_test "(echo hello ) & → allow"                 '(echo hello ) &'                             "allow"
+run_test "(rm -rf / ) & → deny"                    '(rm -rf / ) &'                               "deny"
+run_test "(unknowncmd ) & → defer"                 '(unknowncmd ) &'                             "defer"
+# ) fused with last arg (no space) is NOT stripped — engine defers to rules as-is
+run_test "(unknowncmd) no space before ) → defer"  '(unknowncmd)'                                "defer"
+
 # --- array element assignments ---
 # VAR[subscript]=value: subscript contains letters, numbers, strings, or paths.
 # These are pure in-shell operations — no subprocess → always allow.

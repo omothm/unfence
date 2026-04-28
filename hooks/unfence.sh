@@ -252,6 +252,26 @@ classify_single() {
     [[ ${#TOKENS[@]} -eq 0 ]] && echo "allow" && return  # lone {
   fi
 
+  # Subshell group normalization: (cmd ...) and (cmd ...) &
+  # Shell syntax, not a command — strip the ( ) wrapper and optional trailing &
+  # so downstream rules see the real command.  Requires ) to be a separate token
+  # (i.e. a space before it), which is the form bash-generated commands use.
+  if [[ "${TOKENS[0]}" == \(* ]]; then
+    local n_t=${#TOKENS[@]}
+    # Strip trailing & when the preceding token is )
+    if (( n_t >= 3 )) && [[ "${TOKENS[$((n_t-1))]}" == "&" && "${TOKENS[$((n_t-2))]}" == ")" ]]; then
+      TOKENS=("${TOKENS[@]:0:$((n_t-2))}"); n_t=${#TOKENS[@]}
+    fi
+    # Strip trailing )
+    if (( n_t >= 2 )) && [[ "${TOKENS[$((n_t-1))]}" == ")" ]]; then
+      TOKENS=("${TOKENS[@]:0:$((n_t-1))}"); n_t=${#TOKENS[@]}
+    fi
+    # Strip leading ( from first token (may be fused: "(cmd" → "cmd")
+    TOKENS[0]="${TOKENS[0]#(}"
+    [[ -z "${TOKENS[0]}" ]] && TOKENS=("${TOKENS[@]:1}") && n_t=${#TOKENS[@]}
+    [[ $n_t -eq 0 ]] && echo "allow" && return  # empty subshell
+  fi
+
   local normalized="${TOKENS[*]}"
   log "  classify[$depth]: $normalized"
 
