@@ -154,6 +154,46 @@ _in_tmpdir bash -c "
     && _pass "--add: merges with existing array in pre-existing config" \
     || _fail "--add: merges with existing array in pre-existing config" "merge failed"
 
+# ── Test 13: --del RULE.KEY removes key and keeps sibling ────────────────────
+_in_tmpdir bash -c "
+    python3 '$UNFENCE_CONFIG' --set my-rule.keep=yes >/dev/null
+    python3 '$UNFENCE_CONFIG' --set my-rule.remove=no >/dev/null
+    python3 '$UNFENCE_CONFIG' --del my-rule.remove >/dev/null
+    has_remove=\$(jq 'has(\"remove\")' .claude/unfence.json)
+    keep_val=\$(jq -r '.\"my-rule\".keep' .claude/unfence.json)
+    echo \"\$has_remove \$keep_val\"
+" | grep -q "^false yes$" \
+    && _pass "--del RULE.KEY: removes key, keeps sibling" \
+    || _fail "--del RULE.KEY: removes key, keeps sibling" "unexpected state after delete"
+
+# ── Test 14: --del RULE removes entire section ───────────────────────────────
+_in_tmpdir bash -c "
+    python3 '$UNFENCE_CONFIG' --set rule-a.key=val >/dev/null
+    python3 '$UNFENCE_CONFIG' --set rule-b.key=val >/dev/null
+    python3 '$UNFENCE_CONFIG' --del rule-a >/dev/null
+    has_a=\$(jq 'has(\"rule-a\")' .claude/unfence.json)
+    has_b=\$(jq 'has(\"rule-b\")' .claude/unfence.json)
+    echo \"\$has_a \$has_b\"
+" | grep -q "^false true$" \
+    && _pass "--del RULE: removes entire section, keeps sibling" \
+    || _fail "--del RULE: removes entire section, keeps sibling" "unexpected state after delete"
+
+# ── Test 15: --del on missing key exits non-zero ─────────────────────────────
+_in_tmpdir bash -c "
+    python3 '$UNFENCE_CONFIG' --set my-rule.key=val >/dev/null
+    python3 '$UNFENCE_CONFIG' --del my-rule.no-such-key 2>&1 && echo ok || echo fail
+" | grep -q "^fail$" \
+    && _pass "--del RULE.KEY: exits non-zero when key missing" \
+    || _fail "--del RULE.KEY: exits non-zero when key missing" "should have failed"
+
+# ── Test 16: --del on missing section exits non-zero ─────────────────────────
+_in_tmpdir bash -c "
+    mkdir -p .claude && echo '{}' > .claude/unfence.json
+    python3 '$UNFENCE_CONFIG' --del no-such-rule 2>&1 && echo ok || echo fail
+" | grep -q "^fail$" \
+    && _pass "--del RULE: exits non-zero when section missing" \
+    || _fail "--del RULE: exits non-zero when section missing" "should have failed"
+
 echo ""
 echo "── unfence-config results: $PASS passed, $FAIL failed ──"
 [[ "$FAIL" -eq 0 ]]

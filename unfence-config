@@ -4,6 +4,8 @@
 Usage:
   unfence-config --add RULE.KEY=VALUE    Append VALUE to an array field
   unfence-config --set RULE.KEY=VALUE    Set or replace a value
+  unfence-config --del RULE.KEY          Delete a single key from a section
+  unfence-config --del RULE              Delete an entire section
 
 VALUE formats:
   scalar string:  --set my-rule.name=hello
@@ -29,6 +31,18 @@ def parse_path(key_path: str) -> tuple:
     parts = key_path.split(".", 1)
     if len(parts) != 2 or not parts[0] or not parts[1]:
         sys.exit(f"Error: key must be RULE.KEY (got {key_path!r})")
+    return parts[0], parts[1]
+
+
+def parse_del_path(key_path: str) -> tuple:
+    """Split 'rule' or 'rule.key' into (rule, key_or_None)."""
+    parts = key_path.split(".", 1)
+    if not parts[0]:
+        sys.exit(f"Error: key must be RULE or RULE.KEY (got {key_path!r})")
+    if len(parts) == 1:
+        return parts[0], None
+    if not parts[1]:
+        sys.exit(f"Error: key must be RULE or RULE.KEY (got {key_path!r})")
     return parts[0], parts[1]
 
 
@@ -106,7 +120,28 @@ def main() -> None:
         "--set", metavar="RULE.KEY=VALUE",
         help="Set a scalar field or replace an array entirely",
     )
+    group.add_argument(
+        "--del", metavar="RULE[.KEY]", dest="del_",
+        help="Delete a key from a section, or an entire section",
+    )
     args = parser.parse_args()
+
+    if args.del_ is not None:
+        rule, key = parse_del_path(args.del_)
+        cfg = load_config()
+        if key is None:
+            if rule not in cfg:
+                sys.exit(f"Error: section {rule!r} not found in {CONFIG_PATH}")
+            del cfg[rule]
+            save_config(cfg)
+            print(f"Deleted section {rule}")
+        else:
+            if rule not in cfg or key not in cfg[rule]:
+                sys.exit(f"Error: {rule}.{key} not found in {CONFIG_PATH}")
+            del cfg[rule][key]
+            save_config(cfg)
+            print(f"Deleted {rule}.{key}")
+        return
 
     op = "add" if args.add else "set"
     raw_arg: str = args.add if args.add else args.set
