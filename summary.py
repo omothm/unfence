@@ -1089,8 +1089,12 @@ def load_shadow_cache(rules):
         return None
 
 def _verify_shadow(shadower: Path, shadowed: Path, example: str) -> bool:
-    """Dynamically confirm both rules return non-defer for the example command."""
+    """Confirm shadower fires (non-defer) AND verdicts differ from shadowed.
+
+    Same-verdict overlaps (both allow, both ask) are harmless and not reported.
+    """
     env = {**os.environ, "COMMAND": example}
+    verdicts = []
     for rule in (shadower, shadowed):
         try:
             r = subprocess.run(
@@ -1102,74 +1106,160 @@ def _verify_shadow(shadower: Path, shadowed: Path, example: str) -> bool:
             return False
         if verdict in ("", "defer") or verdict.startswith("recurse:"):
             return False
-    return True
+        verdicts.append(verdict)
+    return verdicts[0] != verdicts[1]
 
-def analyze_shadows(rules, on_proc=None):
-    if not rules:
-        return []
-    rule_map = {r.name: r for r in rules}
-    sections = []
-    for i, rule in enumerate(rules, 1):
+def _rule_one_liner(rule: Path) -> str:
+    """Return a compact description: cached summary if available, else first code line."""
+    cache = CACHE_DIR / rule.name
+    if cache.exists():
         try:
-            content = rule.read_text()
+            s = json.loads(cache.read_text()).get("summary", "")
+            if s:
+                return s
         except Exception:
-            content = "(unreadable)"
-        sections.append(f"--- Rule {i}: {rule.name} ---\n{content}")
-    prompt = (
-        "Analyze these shell permission rules, run in order by a permission engine. "
-        "Each rule reads $COMMAND and outputs: allow, deny, ask, defer, or recurse:<cmd>. "
-        "'defer' means pass to the next rule; any other output is final.\n\n"
-        "A rule SHADOWS a later rule when it returns a non-defer verdict for commands "
-        "that the later rule would also match — preventing that later rule from ever running.\n\n"
-        "Instructions:\n"
-        "- Trace each rule's code carefully for your example command before reporting.\n"
-        "- Verify the shadower actually returns non-defer for the example "
-        "(check arrays, conditions, and logic precisely — do not assume).\n"
-        "- Verify the shadowed rule would also return non-defer for the same example.\n"
-        "- Only report a shadow if BOTH rules would fire for the same command.\n"
-        "- Ignore overlaps where both rules agree on the verdict and the overlap is harmless.\n\n"
-        "Output a JSON array (no markdown). Each element:\n"
-        '  {"shadower": "filename", "shadowed": "filename", "example": "example command"}\n'
-        "If none, output: []\n\n"
-        + "\n\n".join(sections)
-    )
-    shadow_log = CACHE_DIR / "shadow-analysis.log"
+            pass
+    try:
+        for line in rule.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                return line[:120]
+    except Exception:
+        pass
+    return "(unknown)"
+
+def _run_bare(prompt: str, on_proc=None) -> tuple[str, str]:
+    """Run a bare haiku -p call; return (stdout, stderr)."""
     proc = subprocess.Popen(
-        ["claude", "--bare", "-p", prompt, "--model", "sonnet",
-         "-n", "unfence: recommendations"],
+        ["claude", "--bare", "-p", prompt, "--model", "haiku",
+         "--output-format", "text"],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     if on_proc:
         on_proc(proc)
-    stdout, stderr = proc.communicate()
-    import datetime
-    with shadow_log.open("w") as f:
-        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        f.write(f"[{ts}] PROMPT\n{prompt}\n\n[{ts}] RESPONSE\n{stdout}\n")
-        if stderr.strip():
-            f.write(f"[STDERR]\n{stderr}\n")
-    output = "\n".join(
-        line for line in stdout.splitlines()
-        if not line.startswith("```")
-    )
-    try:
-        candidates = json.loads(output.strip())
-        if not isinstance(candidates, list):
-            candidates = []
-    except Exception:
-        candidates = []
+    return proc.communicate()
 
-    # Dynamically verify each candidate — discard any where either rule defers
-    shadows = []
-    for s in candidates:
-        shr_name = s.get("shadower", "")
-        shd_name = s.get("shadowed", "")
-        example  = s.get("example", "")
-        if not (shr_name and shd_name and example):
+def _strip_fences(text: str) -> str:
+    return "\n".join(l for l in text.splitlines() if not l.startswith("```"))
+
+def _extract_json(text: str, default):
+    """Extract the last well-formed JSON array or object from text (handles prose wrappers)."""
+    for start, end in [('[', ']'), ('{', '}')]:
+        idx = text.rfind(start)
+        if idx < 0:
             continue
+        depth = 0
+        for i, c in enumerate(text[idx:]):
+            if c == start:
+                depth += 1
+            elif c == end:
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(text[idx : idx + i + 1])
+                    except Exception:
+                        break
+    return default
+
+def analyze_shadows(rules, on_proc=None):
+    if not rules:
+        return []
+    import datetime
+    rule_map = {r.name: r for r in rules}
+    shadow_log = CACHE_DIR / "shadow-analysis.log"
+    log_lines = []
+    ts = lambda: datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Phase 1 — nominate candidate pairs from compact one-liners (haiku, tiny prompt)
+    descriptions = "\n".join(
+        f"{i}. {r.name}: {_rule_one_liner(r)}"
+        for i, r in enumerate(rules, 1)
+    )
+    p1 = (
+        "Shell permission rules execute in filename-sorted order. "
+        "Each reads $COMMAND and outputs: allow, deny, ask, defer, or recurse:<cmd>. "
+        "Non-defer is final; defer passes to the next rule.\n\n"
+        "A rule SHADOWS a later rule when it fires for commands the later rule would also handle.\n\n"
+        "Rules:\n" + descriptions + "\n\n"
+        "Nominate pairs where the earlier rule likely shadows the later one "
+        "(genuine domain overlap only — not harmless same-verdict overlaps).\n"
+        "Reply with ONLY a JSON array, no explanation, no markdown:\n"
+        '[{"shadower": "filename", "shadowed": "filename"}]\n'
+        "If none, reply with exactly: []"
+    )
+    log_lines.append(f"[{ts()}] PHASE 1 PROMPT\n{p1}\n")
+    out1, err1 = _run_bare(p1, on_proc)
+    log_lines.append(f"[{ts()}] PHASE 1 RESPONSE\n{out1}\n")
+    if err1.strip():
+        log_lines.append(f"[STDERR]\n{err1}\n")
+
+    nominated = _extract_json(out1, [])
+    if not isinstance(nominated, list):
+        nominated = []
+    log_lines.append(f"[{ts()}] NOMINATED: {nominated}\n")
+
+    # Phase 2 — send all nominated pairs in ONE call; each pair includes only its 2 rule sources
+    valid_pairs = []
+    pair_sections = []
+    for pair in nominated:
+        shr_name = pair.get("shadower", "")
+        shd_name = pair.get("shadowed", "")
         shr = rule_map.get(shr_name)
         shd = rule_map.get(shd_name)
-        if shr and shd and _verify_shadow(shr, shd, example):
+        if not (shr and shd):
+            continue
+        try:
+            shr_src = shr.read_text()
+        except Exception:
+            shr_src = "(unreadable)"
+        try:
+            shd_src = shd.read_text()
+        except Exception:
+            shd_src = "(unreadable)"
+        valid_pairs.append((shr_name, shd_name))
+        pair_sections.append(
+            f"=== Pair {len(valid_pairs)}: {shr_name} → {shd_name} ===\n"
+            f"Rule 1 ({shr_name}):\n{shr_src}\n\n"
+            f"Rule 2 ({shd_name}):\n{shd_src}"
+        )
+
+    candidates = []
+    if valid_pairs:
+        p2 = (
+            "Shell permission rules read $COMMAND and output: allow, deny, ask, defer, or recurse:<cmd>. "
+            "Non-defer is final.\n\n"
+            "For each pair below, find ONE specific $COMMAND value where BOTH rules return non-defer. "
+            "Trace the code carefully. If no such command exists for a pair, use null.\n\n"
+            + "\n\n".join(pair_sections) + "\n\n"
+            "Reply with ONLY a JSON array (one object per pair, in order), no explanation, no markdown:\n"
+            '[{"shadower": "filename", "shadowed": "filename", "example": "command or null"}]'
+        )
+        log_lines.append(f"[{ts()}] PHASE 2 PROMPT ({len(valid_pairs)} pairs)\n{p2}\n")
+        out2, err2 = _run_bare(p2, on_proc)
+        log_lines.append(f"[{ts()}] PHASE 2 RESPONSE\n{out2}\n")
+        if err2.strip():
+            log_lines.append(f"[STDERR]\n{err2}\n")
+        results2 = _extract_json(out2, [])
+        if not isinstance(results2, list):
+            results2 = []
+        for item in results2:
+            if not isinstance(item, dict):
+                continue
+            example = item.get("example")
+            shr_name = item.get("shadower", "")
+            shd_name = item.get("shadowed", "")
+            if example and shr_name and shd_name:
+                candidates.append({"shadower": shr_name, "shadowed": shd_name, "example": example})
+
+    log_lines.append(f"[{ts()}] CANDIDATES: {candidates}\n")
+    shadow_log.write_text("\n".join(log_lines))
+
+    # Verify with actual rule engine — discard false positives
+    shadows = []
+    for s in candidates:
+        shr = rule_map.get(s["shadower"])
+        shd = rule_map.get(s["shadowed"])
+        if shr and shd and _verify_shadow(shr, shd, s["example"]):
             shadows.append(s)
 
     mtime, count = _shadow_cache_key(rules)
