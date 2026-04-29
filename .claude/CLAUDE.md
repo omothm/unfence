@@ -248,9 +248,9 @@ When a user requests a modification or addition of a rule, **first evaluate whet
 
 ## Claude Subprocess Logging
 
-All features that spawn a Claude subprocess via `_spawn_claude_task` write the full Claude output to a log file in `CACHE_DIR` (`.claude/cache/`). For example, `modify-{rule.name}.log`, `add-allow-rule.log`, `implement-recommendations.log`. These files persist between TUI runs.
+**Every** Claude subprocess spawned by the TUI — whether via `_spawn_claude_task` or directly via `subprocess.run`/`subprocess.Popen` — must write its full output (prompt, stdout, stderr) to a log file in `CACHE_DIR` (`.claude/cache/`). Use a meaningful name: `summarize-{rule.name}.log`, `shadow-analysis.log`, `modify-{rule.name}.log`, `add-allow-rule.log`, `implement-recommendations.log`, etc. These files persist between TUI runs.
 
-**Rule:** When adding or editing any feature that spawns a Claude subprocess, always ensure the log path is meaningful and discoverable. When debugging a failure that a user reports via screenshot, check the corresponding log file first — it contains the full Claude transcript including any error messages or JSON output.
+**Rule:** When adding or editing any feature that spawns a Claude subprocess, always ensure the log path is meaningful and discoverable. Never use `stderr=subprocess.DEVNULL` or discard stdout without writing it to a log first. When debugging a failure that a user reports via screenshot, check the corresponding log file first — it contains the full Claude transcript including any error messages or JSON output.
 
 ## Claude Subprocess and Protected Paths
 

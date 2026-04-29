@@ -94,10 +94,15 @@ def summarize_rule(rule: Path):
         + content
     )
     result = subprocess.run(
-        ["claude", "-p", prompt, "--model", "haiku",
-         "--output-format", "text", "--setting-sources", "project,local"],
+        ["claude", "--bare", "-p", prompt, "--model", "haiku",
+         "--output-format", "text"],
         capture_output=True, text=True,
     )
+    log_path = CACHE_DIR / f"summarize-{rule.name}.log"
+    with log_path.open("w") as f:
+        f.write(f"[PROMPT]\n{prompt}\n\n[STDOUT]\n{result.stdout}\n")
+        if result.stderr:
+            f.write(f"[STDERR]\n{result.stderr}\n")
     output = "\n".join(
         line for line in result.stdout.splitlines()
         if not line.startswith("```")
@@ -439,8 +444,8 @@ def analyze_recommendations(deferred: dict, dismissed: set, on_proc=None) -> lis
 
         env = {**os.environ}
         proc = subprocess.Popen(
-            ["claude", "-p", prompt, "--model", "claude-haiku-4-5-20251001",
-             "--output-format", "text", "--setting-sources", "project,local",
+            ["claude", "--bare", "-p", prompt, "--model", "claude-haiku-4-5-20251001",
+             "--output-format", "text",
              "-n", "unfence: shadow analysis"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, env=env,
@@ -1128,14 +1133,21 @@ def analyze_shadows(rules, on_proc=None):
         "If none, output: []\n\n"
         + "\n\n".join(sections)
     )
+    shadow_log = CACHE_DIR / "shadow-analysis.log"
     proc = subprocess.Popen(
-        ["claude", "-p", prompt, "--model", "sonnet",
+        ["claude", "--bare", "-p", prompt, "--model", "sonnet",
          "-n", "unfence: recommendations"],
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     if on_proc:
         on_proc(proc)
-    stdout, _ = proc.communicate()
+    stdout, stderr = proc.communicate()
+    import datetime
+    with shadow_log.open("w") as f:
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        f.write(f"[{ts}] PROMPT\n{prompt}\n\n[{ts}] RESPONSE\n{stdout}\n")
+        if stderr.strip():
+            f.write(f"[STDERR]\n{stderr}\n")
     output = "\n".join(
         line for line in stdout.splitlines()
         if not line.startswith("```")
