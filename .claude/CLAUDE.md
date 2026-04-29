@@ -94,8 +94,9 @@ This writes the config JSON to a temp `.claude/unfence.json` and passes it as th
 
 Diagnostic checklist:
 1. Split the command mentally (or via the engine) on `;`, `|`, `&&`, `||`, newlines.
-2. For each part, trace through each rule file in order and check whether it matches.
+2. For each part, trace through **every** rule file in filename order and note which verdict each would produce.
 3. Only conclude a part is unhandled after verifying it against all rule files.
+4. **Check all rules that sort after the one that fired.** A verdict from rule X doesn't mean X is correct — a later rule Y may have given a more specific or more appropriate verdict but never ran because X short-circuited the pipeline. If such a rule exists, the bug is an ordering bug: rename/reorder the later rule to run first. Do not patch rule X to paper over Y's absence.
 
 ## Modifying Rules
 
