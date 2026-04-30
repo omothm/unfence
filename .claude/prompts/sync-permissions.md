@@ -12,7 +12,7 @@ unfence engine so they are auto-approved in the future.
 | `~/.claude/unfence/rules/*.sh` | Individual rule files (sorted by filename for execution order) |
 | `~/.claude/unfence/rules/*.test.sh` | Co-located test files for each rule |
 | `.claude/settings.local.json` (CWD) | Project-local permissions to process |
-| `~/.claude/settings.local.json` | Global permissions to process |
+| `~/.claude/settings.json` | Global user settings — target for promoted non-Bash entries |
 
 ## How the Engine Works
 
@@ -26,7 +26,7 @@ unfence engine so they are auto-approved in the future.
 
 Check both locations:
 - `.claude/settings.local.json` relative to CWD
-- `~/.claude/settings.local.json`
+- `~/.claude/settings.json` (global — for any Bash entries that may exist there)
 
 Read each file with `jq`. Collect all entries under `.permissions.allow[]`.
 
@@ -98,15 +98,17 @@ handled by the unfence hook and must not remain in settings).
 
 #### 6b. Promote non-Bash entries to global
 
-Any non-`Bash` entries (e.g. `WebFetch(...)`) found in the **project-local**
-`.claude/settings.local.json` should be **moved** to `~/.claude/settings.local.json`
+Any non-`Bash` entries (e.g. `WebFetch(...)`, `mcp__*`, `Read(...)`) found in the **project-local**
+`.claude/settings.local.json` should be **moved** to `~/.claude/settings.json`
 so they apply globally and don't sit in a project-specific file.
 
-- Merge them into `~/.claude/settings.local.json` under `.permissions.allow` (create the file/key if absent).
+**Target is `~/.claude/settings.json`, not `~/.claude/settings.local.json`.** Only the former
+is in the recognized settings hierarchy (managed → project-local → project-shared → user global).
+`~/.claude/settings.local.json` is not a recognized scope and permissions placed there are silently ignored.
+
+- Merge them into `~/.claude/settings.json` under `.permissions.allow` (the key already exists; add to it).
 - Then remove them from the project-local file.
 - If the entry already exists in the global file, skip the duplicate.
-
-Non-Bash entries already in `~/.claude/settings.local.json` are left untouched.
 
 #### 6c. Prune empty structures
 
