@@ -86,7 +86,7 @@ This writes the config JSON to a temp `.claude/unfence.json` and passes it as th
   ```bash
   RULES_SUITE=sample-rules bash ~/.claude/unfence/run-tests.sh
   ```
-- **Never proceed with further work if tests are failing.** Fix the issue first.
+- **Never proceed with further work if tests are failing.** Fix the issue first. This includes pre-existing failures that were present before your change — all tests must pass before committing.
 
 ## Diagnosing Why a Command Isn't Auto-Accepted
 
