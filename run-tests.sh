@@ -144,48 +144,6 @@ run_test_with_cwd() {
 }
 export -f run_test_with_cwd
 
-# run_test_config_walkup "desc" "cmd" "expected" "config_json" [depth]
-# Places config at a temp project root under $HOME/Documents, sets cwd to a
-# subdirectory at the given depth (default 2), and runs the engine.
-# Verifies that config loading walks up from a drifted CWD.
-run_test_config_walkup() {
-  local description="$1" command="$2" expected="$3" config_json="$4" depth="${5:-2}"
-  local seq=$(( ++_SEQ ))
-  (( TOTAL++ ))
-
-  if (( _ACTIVE >= _MAX_PARALLEL )); then
-    wait -n 2>/dev/null
-    (( _ACTIVE-- ))
-  fi
-
-  local result_file="$_TMPDIR/$seq"
-  (
-    local tmpdir subdir json output actual
-    tmpdir=$(mktemp -d "$HOME/Documents/.unfence-walkup.XXXXXX")
-    mkdir -p "$tmpdir/.claude"
-    printf '%s' "$config_json" > "$tmpdir/.claude/unfence.json"
-    subdir="$tmpdir"
-    for (( i=0; i<depth; i++ )); do subdir="$subdir/sub$i"; done
-    mkdir -p "$subdir"
-
-    json=$(jq -n --arg cmd "$command" --arg cwd "$subdir" \
-      '{"tool_input":{"command":$cmd},"cwd":$cwd}')
-    output=$(bash "$ENGINE" <<< "$json" 2>/dev/null)
-    rm -rf "$tmpdir"
-
-    actual=$(jq -r '(.hookSpecificOutput.ruleVerdict // .hookSpecificOutput.permissionDecision) // empty' <<< "$output" 2>/dev/null)
-    [[ -z "$actual" ]] && actual="defer"
-
-    if [[ "$actual" == "$expected" ]]; then
-      printf 'P\t%s\t%s\n' "$description" "$expected" > "$result_file"
-    else
-      printf 'F\t%s\t%s\t%s\n' "$description" "$expected" "$actual" > "$result_file"
-    fi
-  ) &
-  (( _ACTIVE++ ))
-}
-export -f run_test_config_walkup
-
 # run_test_deny_reason "desc" "cmd" "expected_reason_substr"
 # Asserts verdict=deny AND permissionDecisionReason contains the given substring.
 run_test_deny_reason() {
