@@ -394,9 +394,18 @@ INPUT=$(cat)
 RAW_COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
 
 SESSION_CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
-if [[ -n "$SESSION_CWD" && -f "$SESSION_CWD/.claude/unfence.json" ]]; then
-  PROJECT_CONFIG=$(cat "$SESSION_CWD/.claude/unfence.json")
-  log "CONFIG loaded from $SESSION_CWD/.claude/unfence.json"
+if [[ -n "$SESSION_CWD" ]]; then
+  _dir="$SESSION_CWD"
+  _floor="$HOME/Documents"
+  while [[ "$_dir" == "$_floor/"* ]]; do
+    if [[ -f "$_dir/.claude/unfence.json" ]]; then
+      PROJECT_CONFIG=$(cat "$_dir/.claude/unfence.json")
+      log "CONFIG loaded from $_dir/.claude/unfence.json"
+      break
+    fi
+    _dir="${_dir%/*}"
+  done
+  unset _dir _floor
 fi
 
 if [[ -z "$RAW_COMMAND" ]]; then
