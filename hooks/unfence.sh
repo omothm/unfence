@@ -431,6 +431,7 @@ if [[ -z "$RAW_COMMAND" ]]; then
   _output "allow" "Only comments, nothing to run"
 fi
 
+log "CWD $SESSION_CWD"
 log "INPUT $RAW_COMMAND"
 
 has_deny=false

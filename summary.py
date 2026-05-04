@@ -585,8 +585,8 @@ def auto_allow_stale() -> bool:
         return True
 
 
-def load_deferred_commands() -> list[tuple[str, str]]:
-    """Parse the unfence log and return (timestamp, command) for deferred sessions
+def load_deferred_commands() -> list[tuple[str, str, str]]:
+    """Parse the unfence log and return (timestamp, command, cwd) for deferred sessions
     from the last 30 days, newest first.  Cached by log (mtime, size)."""
     import datetime
     log_file = PROJECT_DIR / "logs" / "unfence.log"
@@ -597,14 +597,17 @@ def load_deferred_commands() -> list[tuple[str, str]]:
     try:
         cached = json.loads(DEFERRED_CACHE.read_text())
         if cached.get("mtime") == mtime and cached.get("size") == size:
-            return [tuple(e) for e in cached["entries"]]
+            entries = cached["entries"]
+            # Upgrade 2-tuples from old cache to 3-tuples
+            return [(e[0], e[1], e[2] if len(e) > 2 else "") for e in entries]
     except Exception:
         pass
 
     cutoff = datetime.datetime.now() - datetime.timedelta(days=30)
     TS_FMT = "%Y-%m-%d %H:%M:%S"
     pid_input: dict[str, tuple[str, str]] = {}   # pid -> (ts, command)
-    results: list[tuple[str, str]] = []
+    pid_cwd:   dict[str, str]             = {}   # pid -> cwd
+    results: list[tuple[str, str, str]] = []
     cur_pid: str | None = None
     cur_ts:  str        = ""
     cur_lines: list[str] = []
@@ -612,11 +615,14 @@ def load_deferred_commands() -> list[tuple[str, str]]:
     def _flush():
         if cur_pid and cur_lines:
             msg = "\n".join(cur_lines)
-            if msg.startswith("INPUT "):
+            if msg.startswith("CWD "):
+                pid_cwd[cur_pid] = msg[4:]
+            elif msg.startswith("INPUT "):
                 pid_input[cur_pid] = (cur_ts, msg[6:])
             elif msg == "=> defer (some parts had no matching rule)":
                 if cur_pid in pid_input:
-                    results.append(pid_input[cur_pid])
+                    ts, cmd = pid_input[cur_pid]
+                    results.append((ts, cmd, pid_cwd.get(cur_pid, "")))
 
     try:
         with open(log_file, "r", errors="replace") as fh:
@@ -1389,7 +1395,7 @@ class TUI:
 
         # Deferred log view state
         self.deferlog_open     = False
-        self.deferlog_entries  = []   # list of (timestamp_str, command_str), newest first
+        self.deferlog_entries  = []   # list of (timestamp_str, command_str, cwd_str), newest first
         self.deferlog_cursor   = 0    # index into deferlog_entries
         self.deferlog_scroll   = 0    # scroll offset for command body
         self.deferlog_evaling  = False
@@ -1693,7 +1699,7 @@ class TUI:
                 already_added   = set((self._auto_allow_result or {}).get("added") or [])
                 current_result  = self._auto_allow_result
                 # Build hash→cmd map from deferlog so we can check full-command verdicts.
-                hash_to_cmd = {_cmd_hash(cmd): cmd for _, cmd in self.deferlog_entries}
+                hash_to_cmd = {_cmd_hash(cmd): cmd for _, cmd, *_ in self.deferlog_entries}
 
             # For each new entry: if the full command no longer defers under current
             # rules, record it and skip its bases.  Otherwise collect bases for analysis.
@@ -3243,10 +3249,16 @@ class TUI:
             self._draw_deferlog_footer(rows, cols, inner, ctrl_lines, cmd="")
             return
 
-        ts, cmd = entries[cursor]
+        ts, cmd, cwd = entries[cursor]
 
-        # Timestamp on first content row
-        self._draw_item(content_top, ContentLine([(A_DIM, f"  {ts}")]), cols, inner)
+        # Timestamp (+ cwd if available) on first content row
+        if cwd:
+            max_cwd = max(0, inner - len(ts) - 7)   # 2 indent + 2 spaces + " · " = 5 extra
+            cwd_display = cwd if len(cwd) <= max_cwd else "…" + cwd[-(max_cwd - 1):]
+            ts_line: list = [(A_DIM, f"  {ts}  ·  {cwd_display}")]
+        else:
+            ts_line = [(A_DIM, f"  {ts}")]
+        self._draw_item(content_top, ContentLine(ts_line), cols, inner)
         body_top  = content_top + 1
         body_rows = content_rows - 1
         if body_rows <= 0:
@@ -3752,10 +3764,10 @@ class TUI:
                         self._invalidate()
                 elif ev in (ord('e'), ord('E')) and self.deferlog_entries:
                     if not (self.deferlog_eval_result or {}).get("running"):
-                        _, cmd = self.deferlog_entries[self.deferlog_cursor]
+                        _, cmd, *_ = self.deferlog_entries[self.deferlog_cursor]
                         self._run_eval_async(cmd, 'deferlog_eval_result', highlight=False)
                 elif ev in (ord('c'), ord('C')) and self.deferlog_entries:
-                    _, cmd = self.deferlog_entries[self.deferlog_cursor]
+                    _, cmd, *_ = self.deferlog_entries[self.deferlog_cursor]
                     try:
                         subprocess.run(["pbcopy"], input=cmd, text=True, timeout=3)
                     except Exception:
