@@ -98,6 +98,8 @@ Diagnostic checklist:
 3. Only conclude a part is unhandled after verifying it against all rule files.
 4. **Check all rules that sort after the one that fired.** A verdict from rule X doesn't mean X is correct — a later rule Y may have given a more specific or more appropriate verdict but never ran because X short-circuited the pipeline. If such a rule exists, the bug is an ordering bug: rename/reorder the later rule to run first. Do not patch rule X to paper over Y's absence.
 
+**Present the complete trace.** When explaining a diagnosis, account for *every* rule — including those that deferred early. Name each and state concisely why it deferred (e.g. "verb check fails"). Omitting a rule forces the user to fill in the gap themselves and makes the diagnosis unverifiable.
+
 ## Modifying Rules
 
 ## Rule File Agnosticism
