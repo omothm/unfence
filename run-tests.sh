@@ -297,9 +297,14 @@ echo ""
 CONFIG_EXIT=0
 bash "$SCRIPT_DIR/unfence-config-tests.sh" || CONFIG_EXIT=$?
 
+# promotion-safety-check tests (standalone script)
+echo ""
+PSC_EXIT=0
+bash "$SCRIPT_DIR/promotion-safety-check-tests.sh" || PSC_EXIT=$?
+
 # TUI tests
 echo ""
 TUI_EXIT=0
 bash "$SCRIPT_DIR/tui-tests.sh" || TUI_EXIT=$?
 
-exit $(( FAIL + HIGHLIGHT_EXIT + PARSE_SUBS_EXIT + CONFIG_EXIT + TUI_EXIT ))
+exit $(( FAIL + HIGHLIGHT_EXIT + PARSE_SUBS_EXIT + CONFIG_EXIT + PSC_EXIT + TUI_EXIT ))

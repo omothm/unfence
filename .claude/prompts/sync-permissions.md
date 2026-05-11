@@ -40,9 +40,24 @@ For each extracted command, determine if it is **already covered** by the existi
 - Consider both the list-based rules (`1-lists.sh`) and the special-case checkers (`2-check-*.sh`)
 - If already covered → skip (no rule needed, but still clean up the entry)
 
+### 2b. Classify command safety
+
+For each uncovered command, run the static safety check first:
+
+```bash
+COMMAND="<full command string>" bash ~/.claude/unfence/hooks/promotion-safety-check.sh
+```
+
+- If it outputs `skip` → skip this command entirely (no rule written). The entry is still removed from `settings.local.json` in Step 6.
+- If it outputs `proceed` → apply additional judgment before writing a rule (see below).
+
+For commands that pass the static check, apply the same high bar used by the auto-allow analyzer: only write a rule if the command is safe in **ALL** forms with **ANY** arguments. If the worst case includes data loss, network mutation, process termination, privilege escalation, or any irreversible side effect — skip it even if the script returned `proceed`.
+
+Skipped commands are **still removed from `settings.local.json`** in Step 6 — the user got their one-time approval; future invocations will prompt again.
+
 ### 3. Design the rule
 
-For each **uncovered** command, read all existing rule files in `~/.claude/unfence/rules/` and pick the **best-matching** destination:
+For each **uncovered and safe** command, read all existing rule files in `~/.claude/unfence/rules/` and pick the **best-matching** destination:
 
 - Understand each rule's purpose, scope, and structure.
 - Choose the rule where this command most naturally belongs — by command family, matching logic, or domain.
