@@ -28,6 +28,11 @@ MAX_RECURSE=10
 # Exported so rule subshells can read project-specific config.
 PROJECT_CONFIG=""
 
+# Populated per-part as the engine iterates a compound command.
+# Holds simple VAR=literal assignments seen so far, serialized as a JSON object.
+# Rules read this to resolve leading $VAR references in their tokens.
+INLINE_VARS="{}"
+
 log() {
   [[ -n "${NO_LOG:-}" ]] && return 0
   printf '[%s] [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$SESSION_ID" "$*" \
@@ -357,9 +362,24 @@ if [[ -n "$EVAL_MODE" ]]; then
   defer_parts=()
   _vtmp=$(mktemp)
 
+  declare -A _ivars=()
   while IFS= read -r -d '' part; do
     part=$(echo "$part" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
     [[ -z "$part" ]] && continue
+    # Track simple VAR=literal assignments so rules can expand inline $VAR references
+    if [[ "$part" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+      _ivk="${BASH_REMATCH[1]}" _ivv="${BASH_REMATCH[2]}"
+      if [[ "$_ivv" != *'$('* && "$_ivv" != *'`'* ]]; then
+        _ivv="${_ivv#\'}" ; _ivv="${_ivv%\'}" ; _ivv="${_ivv#\"}" ; _ivv="${_ivv%\"}"
+        _ivars["$_ivk"]="$_ivv"
+        _ivj="{" _ivs=""
+        for _ivk in "${!_ivars[@]}"; do
+          _ivj+="${_ivs}\"${_ivk}\":$(printf '%s' "${_ivars[$_ivk]}" | jq -Rs .)"
+          _ivs=","
+        done
+        INLINE_VARS="${_ivj}}"
+      fi
+    fi
     # Redirect (not subshell) so _LAST_RULE propagates back to this shell
     classify_single "$part" > "$_vtmp"
     v=$(cat "$_vtmp")
@@ -439,9 +459,24 @@ has_ask=false
 all_allow=true
 _DENY_MSG=""
 
+declare -A _ivars=()
 while IFS= read -r -d '' part; do
   part=$(echo "$part" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
   [[ -z "$part" ]] && continue
+  # Track simple VAR=literal assignments so rules can expand inline $VAR references
+  if [[ "$part" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+    _ivk="${BASH_REMATCH[1]}" _ivv="${BASH_REMATCH[2]}"
+    if [[ "$_ivv" != *'$('* && "$_ivv" != *'`'* ]]; then
+      _ivv="${_ivv#\'}" ; _ivv="${_ivv%\'}" ; _ivv="${_ivv#\"}" ; _ivv="${_ivv%\"}"
+      _ivars["$_ivk"]="$_ivv"
+      _ivj="{" _ivs=""
+      for _ivk in "${!_ivars[@]}"; do
+        _ivj+="${_ivs}\"${_ivk}\":$(printf '%s' "${_ivars[$_ivk]}" | jq -Rs .)"
+        _ivs=","
+      done
+      INLINE_VARS="${_ivj}}"
+    fi
+  fi
 
   verdict=$(classify_single "$part")
 
