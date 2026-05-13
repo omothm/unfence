@@ -366,8 +366,11 @@ if [[ -n "$EVAL_MODE" ]]; then
   while IFS= read -r -d '' part; do
     part=$(echo "$part" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
     [[ -z "$part" ]] && continue
-    # Track simple VAR=literal assignments so rules can expand inline $VAR references
-    if [[ "$part" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+    # Track simple VAR=literal assignments so rules can expand inline $VAR references.
+    # Strip export/local/readonly prefix so "export VAR=val" is tracked like "VAR=val".
+    _iv_part="$part"
+    _iv_part="${_iv_part#export }"; _iv_part="${_iv_part#local }"; _iv_part="${_iv_part#readonly }"
+    if [[ "$_iv_part" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
       _ivk="${BASH_REMATCH[1]}" _ivv="${BASH_REMATCH[2]}"
       if [[ "$_ivv" != *'$('* && "$_ivv" != *'`'* ]]; then
         _ivv="${_ivv#\'}" ; _ivv="${_ivv%\'}" ; _ivv="${_ivv#\"}" ; _ivv="${_ivv%\"}"
@@ -463,8 +466,11 @@ declare -A _ivars=()
 while IFS= read -r -d '' part; do
   part=$(echo "$part" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
   [[ -z "$part" ]] && continue
-  # Track simple VAR=literal assignments so rules can expand inline $VAR references
-  if [[ "$part" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+  # Track simple VAR=literal assignments so rules can expand inline $VAR references.
+  # Strip export/local/readonly prefix so "export VAR=val" is tracked like "VAR=val".
+  _iv_part="$part"
+  _iv_part="${_iv_part#export }"; _iv_part="${_iv_part#local }"; _iv_part="${_iv_part#readonly }"
+  if [[ "$_iv_part" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
     _ivk="${BASH_REMATCH[1]}" _ivv="${BASH_REMATCH[2]}"
     if [[ "$_ivv" != *'$('* && "$_ivv" != *'`'* ]]; then
       _ivv="${_ivv#\'}" ; _ivv="${_ivv%\'}" ; _ivv="${_ivv#\"}" ; _ivv="${_ivv%\"}"
