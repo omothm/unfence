@@ -1094,183 +1094,6 @@ def load_shadow_cache(rules):
     except Exception:
         return None
 
-def _verify_shadow(shadower: Path, shadowed: Path, example: str) -> bool:
-    """Confirm shadower fires (non-defer) AND verdicts differ from shadowed.
-
-    Same-verdict overlaps (both allow, both ask) are harmless and not reported.
-    """
-    env = {**os.environ, "COMMAND": example}
-    verdicts = []
-    for rule in (shadower, shadowed):
-        try:
-            r = subprocess.run(
-                ["bash", str(rule)], env=env,
-                capture_output=True, text=True, timeout=5,
-            )
-            verdict = r.stdout.strip()
-        except Exception:
-            return False
-        if verdict in ("", "defer") or verdict.startswith("recurse:"):
-            return False
-        verdicts.append(verdict)
-    return verdicts[0] != verdicts[1]
-
-def _rule_one_liner(rule: Path) -> str:
-    """Return a compact description: cached summary if available, else first code line."""
-    cache = CACHE_DIR / rule.name
-    if cache.exists():
-        try:
-            s = json.loads(cache.read_text()).get("summary", "")
-            if s:
-                return s
-        except Exception:
-            pass
-    try:
-        for line in rule.read_text().splitlines():
-            line = line.strip()
-            if line and not line.startswith("#"):
-                return line[:120]
-    except Exception:
-        pass
-    return "(unknown)"
-
-def _run_bare(prompt: str, on_proc=None) -> tuple[str, str]:
-    """Run a bare haiku -p call; return (stdout, stderr)."""
-    proc = subprocess.Popen(
-        ["claude", "--bare", "-p", prompt, "--model", "haiku",
-         "--output-format", "text"],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-    )
-    if on_proc:
-        on_proc(proc)
-    return proc.communicate()
-
-def _strip_fences(text: str) -> str:
-    return "\n".join(l for l in text.splitlines() if not l.startswith("```"))
-
-def _extract_json(text: str, default):
-    """Extract the last well-formed JSON array or object from text (handles prose wrappers)."""
-    for start, end in [('[', ']'), ('{', '}')]:
-        idx = text.rfind(start)
-        if idx < 0:
-            continue
-        depth = 0
-        for i, c in enumerate(text[idx:]):
-            if c == start:
-                depth += 1
-            elif c == end:
-                depth -= 1
-                if depth == 0:
-                    try:
-                        return json.loads(text[idx : idx + i + 1])
-                    except Exception:
-                        break
-    return default
-
-def analyze_shadows(rules, on_proc=None):
-    if not rules:
-        return []
-    import datetime
-    rule_map = {r.name: r for r in rules}
-    shadow_log = CACHE_DIR / "shadow-analysis.log"
-    log_lines = []
-    ts = lambda: datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    # Phase 1 — nominate candidate pairs from compact one-liners (haiku, tiny prompt)
-    descriptions = "\n".join(
-        f"{i}. {r.name}: {_rule_one_liner(r)}"
-        for i, r in enumerate(rules, 1)
-    )
-    p1 = (
-        "Shell permission rules execute in filename-sorted order. "
-        "Each reads $COMMAND and outputs: allow, deny, ask, defer, or recurse:<cmd>. "
-        "Non-defer is final; defer passes to the next rule.\n\n"
-        "A rule SHADOWS a later rule when it fires for commands the later rule would also handle.\n\n"
-        "Rules:\n" + descriptions + "\n\n"
-        "Nominate pairs where the earlier rule likely shadows the later one "
-        "(genuine domain overlap only — not harmless same-verdict overlaps).\n"
-        "Reply with ONLY a JSON array, no explanation, no markdown:\n"
-        '[{"shadower": "filename", "shadowed": "filename"}]\n'
-        "If none, reply with exactly: []"
-    )
-    log_lines.append(f"[{ts()}] PHASE 1 PROMPT\n{p1}\n")
-    out1, err1 = _run_bare(p1, on_proc)
-    log_lines.append(f"[{ts()}] PHASE 1 RESPONSE\n{out1}\n")
-    if err1.strip():
-        log_lines.append(f"[STDERR]\n{err1}\n")
-
-    nominated = _extract_json(out1, [])
-    if not isinstance(nominated, list):
-        nominated = []
-    log_lines.append(f"[{ts()}] NOMINATED: {nominated}\n")
-
-    # Phase 2 — send all nominated pairs in ONE call; each pair includes only its 2 rule sources
-    valid_pairs = []
-    pair_sections = []
-    for pair in nominated:
-        shr_name = pair.get("shadower", "")
-        shd_name = pair.get("shadowed", "")
-        shr = rule_map.get(shr_name)
-        shd = rule_map.get(shd_name)
-        if not (shr and shd):
-            continue
-        try:
-            shr_src = shr.read_text()
-        except Exception:
-            shr_src = "(unreadable)"
-        try:
-            shd_src = shd.read_text()
-        except Exception:
-            shd_src = "(unreadable)"
-        valid_pairs.append((shr_name, shd_name))
-        pair_sections.append(
-            f"=== Pair {len(valid_pairs)}: {shr_name} → {shd_name} ===\n"
-            f"Rule 1 ({shr_name}):\n{shr_src}\n\n"
-            f"Rule 2 ({shd_name}):\n{shd_src}"
-        )
-
-    candidates = []
-    if valid_pairs:
-        p2 = (
-            "Shell permission rules read $COMMAND and output: allow, deny, ask, defer, or recurse:<cmd>. "
-            "Non-defer is final.\n\n"
-            "For each pair below, find ONE specific $COMMAND value where BOTH rules return non-defer. "
-            "Trace the code carefully. If no such command exists for a pair, use null.\n\n"
-            + "\n\n".join(pair_sections) + "\n\n"
-            "Reply with ONLY a JSON array (one object per pair, in order), no explanation, no markdown:\n"
-            '[{"shadower": "filename", "shadowed": "filename", "example": "command or null"}]'
-        )
-        log_lines.append(f"[{ts()}] PHASE 2 PROMPT ({len(valid_pairs)} pairs)\n{p2}\n")
-        out2, err2 = _run_bare(p2, on_proc)
-        log_lines.append(f"[{ts()}] PHASE 2 RESPONSE\n{out2}\n")
-        if err2.strip():
-            log_lines.append(f"[STDERR]\n{err2}\n")
-        results2 = _extract_json(out2, [])
-        if not isinstance(results2, list):
-            results2 = []
-        for item in results2:
-            if not isinstance(item, dict):
-                continue
-            example = item.get("example")
-            shr_name = item.get("shadower", "")
-            shd_name = item.get("shadowed", "")
-            if example and shr_name and shd_name:
-                candidates.append({"shadower": shr_name, "shadowed": shd_name, "example": example})
-
-    log_lines.append(f"[{ts()}] CANDIDATES: {candidates}\n")
-    shadow_log.write_text("\n".join(log_lines))
-
-    # Verify with actual rule engine — discard false positives
-    shadows = []
-    for s in candidates:
-        shr = rule_map.get(s["shadower"])
-        shd = rule_map.get(s["shadowed"])
-        if shr and shd and _verify_shadow(shr, shd, s["example"]):
-            shadows.append(s)
-
-    mtime, count = _shadow_cache_key(rules)
-    SHADOW_CACHE.write_text(json.dumps({"mtime": mtime, "count": count, "shadows": shadows}))
-    return shadows
 
 
 # ── Live evaluation ───────────────────────────────────────────────────────────
@@ -1353,11 +1176,12 @@ class TUI:
         self.active       = set()
         self.last_refresh = ""
 
-        self.shadows       = {}
-        self.shadow_active = False
-        self.shadow_open   = False
-        self._shadow_gen   = 0    # incremented each time analysis starts
-        self._shadow_proc  = None # Popen handle of the running analysis
+        self.shadows          = {}
+        self.shadow_active    = False
+        self.shadow_open      = False
+        self._shadow_gen      = 0    # incremented on each new analysis; stale results discarded
+        self._shadow_proc     = None # Popen handle of the running analysis
+        self._shadow_result   = None # raw list from the last completed analysis
         self._header_rows  = 4   # updated each render()
 
         self.log_stats = load_log_stats()
@@ -1585,28 +1409,53 @@ class TUI:
             with self._lock:
                 self.shadows = self._parse_shadows(cached)
             self._invalidate()
-        else:
+            return
+
+        # Kill any in-progress analysis before starting a new one.
+        with self._lock:
+            old_proc = self._shadow_proc
+            self._shadow_gen += 1
+            gen = self._shadow_gen
+        if old_proc:
+            try:
+                old_proc.terminate()
+            except Exception:
+                pass
+
+        shadow_log = CACHE_DIR / "shadow-analysis.log"
+
+        def parse_shadow_output(lines):
+            for line in reversed(lines):
+                line = line.strip()
+                if line.startswith("["):
+                    try:
+                        result = json.loads(line)
+                        if isinstance(result, list):
+                            return result
+                    except Exception:
+                        pass
+            return []
+
+        def on_shadow_done():
             with self._lock:
-                self._shadow_gen  += 1
-                gen                = self._shadow_gen
-                self.shadow_active = True
-            self._invalidate()
-            def work(gen=gen):
-                with self._lock:
-                    r = list(self.rules)
-                def on_proc(p):
-                    with self._lock:
-                        if self._shadow_gen == gen:
-                            self._shadow_proc = p
-                result = analyze_shadows(r, on_proc=on_proc)
-                with self._lock:
-                    if self._shadow_gen != gen:
-                        return          # superseded — discard results
-                    self._shadow_proc  = None
-                    self.shadows       = self._parse_shadows(result)
-                    self.shadow_active = False
-                self._invalidate()
-            threading.Thread(target=work, daemon=True).start()
+                if self._shadow_gen != gen:
+                    return  # superseded — discard results
+                result = self._shadow_result or []
+                self.shadows = self._parse_shadows(result)
+            mtime, count = _shadow_cache_key(rules)
+            SHADOW_CACHE.write_text(json.dumps({"mtime": mtime, "count": count, "shadows": result}))
+
+        self._spawn_claude_task(
+            shadow_log,
+            f"rules_dir={RULES_DIR}",
+            name="shadow-analysis",
+            proc_attr="_shadow_proc",
+            active_attr="shadow_active",
+            result_attr="_shadow_result",
+            parse_result=parse_shadow_output,
+            on_done=on_shadow_done,
+            agent="shadow-analysis",
+        )
 
     @staticmethod
     def _parse_shadows(shadow_list):

@@ -297,6 +297,11 @@ echo ""
 CONFIG_EXIT=0
 bash "$SCRIPT_DIR/unfence-config-tests.sh" || CONFIG_EXIT=$?
 
+# shadow-find tests (standalone script)
+echo ""
+SHADOW_FIND_EXIT=0
+bash "$SCRIPT_DIR/shadow-find-tests.sh" || SHADOW_FIND_EXIT=$?
+
 # promotion-safety-check tests (standalone script)
 echo ""
 PSC_EXIT=0
@@ -307,4 +312,4 @@ echo ""
 TUI_EXIT=0
 bash "$SCRIPT_DIR/tui-tests.sh" || TUI_EXIT=$?
 
-exit $(( FAIL + HIGHLIGHT_EXIT + PARSE_SUBS_EXIT + CONFIG_EXIT + PSC_EXIT + TUI_EXIT ))
+exit $(( FAIL + HIGHLIGHT_EXIT + PARSE_SUBS_EXIT + CONFIG_EXIT + SHADOW_FIND_EXIT + PSC_EXIT + TUI_EXIT ))
