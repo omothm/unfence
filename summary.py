@@ -357,23 +357,25 @@ def _rec_already_covered(pattern: str, info: dict) -> bool:
 
 def load_rec_cache():
     """Load recommendations from cache.
-    Returns (recs, dismissed_set, last_ts).
+    Returns (recs, dismissed_set, last_ts, last_run).
     """
     try:
         data = json.loads(REC_CACHE.read_text())
         recs      = data.get("recs", [])
         dismissed = set(data.get("dismissed", []))
         last_ts   = data.get("last_ts", "")
-        return recs, dismissed, last_ts
+        last_run  = data.get("last_run", "")
+        return recs, dismissed, last_ts, last_run
     except Exception:
-        return [], set(), ""
+        return [], set(), "", ""
 
 
-def save_rec_cache(recs: list, dismissed: set, last_ts: str):
+def save_rec_cache(recs: list, dismissed: set, last_ts: str, last_run: str = ""):
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         REC_CACHE.write_text(json.dumps({
             "last_ts":   last_ts,
+            "last_run":  last_run,
             "log_size":  _log_size(),   # staleness sentinel
             "recs":      recs,
             "dismissed": list(dismissed),
@@ -940,6 +942,7 @@ def _shadow_cache_key(rules):
     return max(r.stat().st_mtime for r in rules), len(rules)
 
 def load_shadow_cache(rules):
+    """Return (shadows, last_run) if cache is fresh, else None."""
     if not SHADOW_CACHE.exists():
         return None
     try:
@@ -949,7 +952,7 @@ def load_shadow_cache(rules):
             return None
         if abs(data.get("mtime", 0) - mtime) > 0.001:
             return None
-        return data.get("shadows", [])
+        return data.get("shadows", []), data.get("last_run", "")
     except Exception:
         return None
 
@@ -1038,6 +1041,7 @@ class TUI:
         self.shadows          = {}
         self.shadow_active    = False
         self.shadow_open      = False
+        self.shadow_last_run  = ""   # datetime string of last completed shadow analysis
         self._shadow_gen      = 0    # incremented on each new analysis; stale results discarded
         self._shadow_proc     = None # Popen handle of the running analysis
         self._shadow_result   = None # raw list from the last completed analysis
@@ -1063,6 +1067,7 @@ class TUI:
         self.recs             = []     # list of rec dicts (pending)
         self._rec_dismissed   = set()  # dismissed fingerprints (patterns)
         self._rec_last_ts     = ""     # timestamp of last log line analyzed
+        self._rec_last_run    = ""     # datetime string of last completed rec analysis
         self.rec_open         = False
         self.rec_cursor     = 0
         self._rec_scroll    = 0
@@ -1147,7 +1152,7 @@ class TUI:
         self._load_rules()
         self._trigger_stale()
         self._load_shadows()
-        self.recs, self._rec_dismissed, self._rec_last_ts = load_rec_cache()
+        self.recs, self._rec_dismissed, self._rec_last_ts, self._rec_last_run = load_rec_cache()
         if rec_cache_stale():
             self._load_recs()
         if auto_allow_stale():
@@ -1265,8 +1270,10 @@ class TUI:
             rules = list(self.rules)
         cached = load_shadow_cache(rules)
         if cached is not None:
+            shadows, last_run = cached
             with self._lock:
-                self.shadows = self._parse_shadows(cached)
+                self.shadows          = self._parse_shadows(shadows)
+                self.shadow_last_run  = last_run
             self._invalidate()
             return
 
@@ -1296,13 +1303,19 @@ class TUI:
             return []
 
         def on_shadow_done():
+            import datetime
+            last_run = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
             with self._lock:
                 if self._shadow_gen != gen:
                     return  # superseded — discard results
                 result = self._shadow_result or []
-                self.shadows = self._parse_shadows(result)
+                self.shadows         = self._parse_shadows(result)
+                self.shadow_last_run = last_run
             mtime, count = _shadow_cache_key(rules)
-            SHADOW_CACHE.write_text(json.dumps({"mtime": mtime, "count": count, "shadows": result}))
+            SHADOW_CACHE.write_text(json.dumps({
+                "mtime": mtime, "count": count,
+                "shadows": result, "last_run": last_run,
+            }))
 
         self._spawn_claude_task(
             shadow_log,
@@ -1374,6 +1387,8 @@ class TUI:
                 return []
 
             def on_rec_done():
+                import datetime
+                last_run = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
                 with self._lock:
                     raw = self._rec_result or []
                     new_recs = [r for r in raw
@@ -1408,9 +1423,10 @@ class TUI:
                         else:
                             merged[p] = r
                     recs = list(merged.values())
-                    self.recs         = recs
-                    self._rec_last_ts = new_ts
-                save_rec_cache(recs, dismissed, new_ts)
+                    self.recs            = recs
+                    self._rec_last_ts    = new_ts
+                    self._rec_last_run   = last_run
+                save_rec_cache(recs, dismissed, new_ts, last_run)
 
             if not self._spawn_claude_task(
                 log_path,
@@ -1602,10 +1618,11 @@ class TUI:
                 recs      = list(self.recs)
                 dismissed = set(self._rec_dismissed)
                 last_ts   = self._rec_last_ts
+                last_run  = self._rec_last_run
             recs = [r for r in recs if _engine_verdict(r["pattern"]) != "allow"]
             with self._lock:
                 self.recs = recs
-            save_rec_cache(recs, dismissed, last_ts)
+            save_rec_cache(recs, dismissed, last_ts, last_run)
             for pat in accepted:
                 append_change_log("REC", "", f"Implemented recommendation: {pat}")
 
@@ -2230,9 +2247,11 @@ class TUI:
 
     # ── Eval pane sizing ──────────────────────────────────────────────────────
 
-    def _desc_rows(self, description: str, inner: int) -> int:
+    def _desc_rows(self, description: str | list[str], inner: int) -> int:
         """Rows consumed by a pane description: wrapped lines + divider."""
-        return len(list(word_wrap(description, max(1, inner - 4)))) + 1
+        items = description if isinstance(description, list) else [description]
+        total = sum(len(list(word_wrap(d, max(1, inner - 4)))) for d in items)
+        return total + 1
 
     def _pane_overhead(self, description: str | None, inner: int) -> int:
         """Fixed rows consumed by pane chrome: gap + title + optional desc + divider.
@@ -2241,6 +2260,18 @@ class TUI:
         if description:
             overhead += self._desc_rows(description, inner)
         return overhead
+
+    def _shadow_desc(self) -> str | list[str]:
+        base = "Rules where an earlier rule already matches the same commands."
+        if self.shadow_last_run:
+            return [base, f"Last run: {self.shadow_last_run}"]
+        return base
+
+    def _rec_desc(self) -> str | list[str]:
+        base = "Commands seen in logs that may be safe to auto-allow."
+        if self._rec_last_run:
+            return [base, f"Last run: {self._rec_last_run}"]
+        return base
 
     def _eval_pane_rows(self, inner: int) -> int:
         """Dynamic height: separator + description + input lines (capped)."""
@@ -2270,7 +2301,7 @@ class TUI:
                 content += max(1, len(list(word_wrap(fix, fix_w))))
         if not content:
             content = 1  # "No shadows detected."
-        return self._size_pane(rows, inner, content, "Rules where an earlier rule already matches the same commands.")
+        return self._size_pane(rows, inner, content, self._shadow_desc())
 
     def _draw_shadow_pane(self, rows, cols, inner, shadow_rows):
         A_NORMAL = curses.A_NORMAL
@@ -2280,7 +2311,7 @@ class TUI:
 
         sep_row, content_start = self._begin_pane(
             rows, cols, inner, shadow_rows, " Shadow Analysis ",
-            description="Rules where an earlier rule already matches the same commands.")
+            description=self._shadow_desc())
 
         with self._lock:
             shadows   = dict(self.shadows)
@@ -2333,7 +2364,7 @@ class TUI:
             content = 1
         else:
             content = sum(self._rec_item_rows(r, wrap_w) for r in visible)
-        return self._size_pane(rows, inner, content, "Commands seen in logs that may be safe to auto-allow.")
+        return self._size_pane(rows, inner, content, self._rec_desc())
 
     def _draw_rec_pane(self, rows, cols, inner, rec_rows):
         A_NORMAL = curses.A_NORMAL
@@ -2341,10 +2372,10 @@ class TUI:
         A_BOLD   = curses.A_BOLD
         CP6      = curses.color_pair(6)
 
-        _rec_desc = "Commands seen in logs that may be safe to auto-allow."
+        rec_desc = self._rec_desc()
         sep_row, content_start = self._begin_pane(
             rows, cols, inner, rec_rows, " Recommendations ",
-            description=_rec_desc)
+            description=rec_desc)
 
         with self._lock:
             recs      = list(self.recs)
@@ -2357,7 +2388,7 @@ class TUI:
         scroll = self._rec_scroll  # row offset, already clamped by render()
         wrap_w = max(1, inner - 6)
 
-        _overhead     = self._pane_overhead(_rec_desc, inner)
+        _overhead     = self._pane_overhead(rec_desc, inner)
         _content_rows = max(1, rec_rows - _overhead)
         _total        = sum(self._rec_item_rows(r, wrap_w) for r in visible) if visible else 0
         self._draw_scroll_indicators(
@@ -2474,7 +2505,8 @@ class TUI:
         except curses.error:
             pass
         if description:
-            desc_lines = list(word_wrap(description, max(1, inner - 4)))
+            items = description if isinstance(description, list) else [description]
+            desc_lines = [line for d in items for line in word_wrap(d, max(1, inner - 4))]
             for i, dline in enumerate(desc_lines):
                 self._draw_item(title_row + 1 + i,
                                 ContentLine([(curses.A_DIM, f"  {dline}")],
@@ -3364,8 +3396,7 @@ class TUI:
                 cursor    = self.rec_cursor
             visible = [r for r in recs if r["pattern"] not in dismissed]
             wrap_w  = max(1, inner - 6)
-            _rec_desc = "Commands seen in logs that may be safe to auto-allow."
-            content_rows = max(1, rec_rows - self._pane_overhead(_rec_desc, inner))
+            content_rows = max(1, rec_rows - self._pane_overhead(self._rec_desc(), inner))
             # Build cumulative row offsets per rec index
             offsets = []
             acc = 0
@@ -3765,7 +3796,8 @@ class TUI:
                         recs_now      = list(self.recs)
                         dismissed_now = set(self._rec_dismissed)
                         last_ts_now   = self._rec_last_ts
-                    save_rec_cache(recs_now, dismissed_now, last_ts_now)
+                        last_run_now  = self._rec_last_run
+                    save_rec_cache(recs_now, dismissed_now, last_ts_now, last_run_now)
                     # Adjust cursor
                     new_visible = [r for r in recs_now if r["pattern"] not in dismissed_now]
                     self.rec_cursor = min(cursor, max(0, len(new_visible) - 1))
