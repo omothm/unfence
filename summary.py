@@ -348,152 +348,11 @@ def _parse_entry_subs_from_log(after_ts: str = "") -> tuple:
     return result, last_ts
 
 
-def analyze_recommendations(deferred: dict, dismissed: set, on_proc=None) -> list:
-    """AI analysis of deferred commands. Returns list of safe rec dicts.
-    Each dict: {pattern, examples, count, rationale}
-    dismissed: set of patterns to skip.
-    on_proc: optional callback(proc) when subprocess starts.
-    """
-    # Filter out patterns already handled by the engine (false positives from
-    # compound commands where only a *different* sub-command deferred).
-    def _already_covered(pattern: str, info: dict) -> bool:
-        """True if the pattern or any of its example commands is already allowed."""
-        if _engine_verdict(pattern) == "allow":
-            return True
-        return any(_engine_verdict(ex) == "allow" for ex in info.get("examples", []))
-
-    already_allowed = [p for p, v in deferred.items()
-                       if p not in dismissed and _already_covered(p, v)]
-    candidates = {p: v for p, v in deferred.items()
-                  if p not in dismissed and not _already_covered(p, v)}
-
-    rec_log = CACHE_DIR / "rec-analysis.log"
-    def _log(msg: str):
-        try:
-            with rec_log.open("a") as f:
-                f.write(msg + "\n")
-        except Exception:
-            pass
-
-    import datetime
-    _log(f"\n{'='*60}")
-    _log(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] FILTER")
-    _log(f"  deferred patterns: {sorted(deferred.keys())}")
-    _log(f"  already allowed (filtered): {sorted(already_allowed)}")
-    _log(f"  candidates for haiku: {sorted(candidates.keys())}")
-
-    if not candidates:
-        return []
-
-    lines = []
-    for pattern, info in sorted(candidates.items(), key=lambda x: -x[1]["count"]):
-        exs = "  |  ".join(info["examples"][:3])
-        lines.append(f'  {info["count"]}x  {pattern}  e.g. "{exs}"')
-
-    # Build a compact view of current rule files so the model knows what is
-    # already handled and does not re-recommend those patterns.
-    rule_sections = []
-    for rule_path in sorted(RULES_DIR.glob("*.sh")):
-        if rule_path.name.endswith(".test.sh"):
-            continue
-        try:
-            rule_sections.append(f"### {rule_path.name}\n{rule_path.read_text()}")
-        except Exception:
-            pass
-    rules_block = (
-        "Current rule files (already handled — do NOT recommend any pattern "
-        "already covered by these rules):\n\n"
-        + "\n\n".join(rule_sections)
-        + "\n\n"
-    ) if rule_sections else ""
-
-    prompt = (
-        "You are analyzing bash commands that were deferred to a human prompt because no "
-        "unfence rule matched them. Assess which patterns are safe to auto-approve.\n\n"
-        "Rules for SAFE: read-only introspection (status, list, show, describe, query), "
-        "syntax/compile checks, running well-known test/build tools in a repo, "
-        "standard help/version flags.\n"
-        "Rules for NOT SAFE: anything that mutates files, pushes code, modifies system "
-        "state, makes network requests beyond read-only fetches, has irreversible effects, "
-        "spawns or wraps other programs (e.g. script, watch, xargs, nohup, eval), "
-        "or monitors/reacts to filesystem events (e.g. fswatch, inotifywait).\n\n"
-        "IMPORTANT: assess every pattern regardless of how many times it occurred. "
-        "A pattern seen only once may still be worth whitelisting if it is clearly safe. "
-        "When in doubt, exclude — only recommend patterns that are unambiguously read-only "
-        "or widely-used build/test tooling with no meaningful side effects.\n\n"
-        "Before finalising your output, do a safety pass over each candidate you intend to "
-        "recommend: ask yourself 'if this prefix were auto-allowed with no further checks, "
-        "what is the worst a malicious or mistaken command matching it could do?' "
-        "If the answer is anything beyond harmless read-only introspection, drop it.\n\n"
-        + rules_block
-        + "Commands (count × pattern  e.g. example):\n"
-        + "\n".join(lines) + "\n\n"
-        "PATTERN SPECIFICITY: Choose the most specific safe prefix — use the examples to "
-        "determine the right depth. If all examples share the same subcommand (e.g. 'sf config get'), "
-        "use that full subcommand as the pattern. Only use a short 1-2 token prefix when the "
-        "examples vary in subcommand and all variants are safe. Never return a shorter prefix "
-        "than what the examples justify.\n\n"
-        "Return a JSON array of safe patterns only:\n"
-        '[{"pattern": "most specific safe prefix", "examples": ["ex1", "ex2"], "count": N, "rationale": "one sentence why safe"}]\n'
-        "Return [] if nothing is clearly safe. No markdown fences."
-    )
-
-    try:
-        _log(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] PROMPT")
-        _log(prompt)
-
-        env = {**os.environ}
-        proc = subprocess.Popen(
-            ["claude", "--bare", "-p", prompt, "--model", "claude-haiku-4-5-20251001",
-             "--output-format", "text",
-             "-n", "unfence: shadow analysis"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, env=env,
-        )
-        if on_proc:
-            on_proc(proc)
-        stdout, stderr = proc.communicate(timeout=60)
-        _log(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] RESPONSE")
-        _log(stdout)
-        if stderr.strip():
-            _log(f"STDERR: {stderr.strip()}")
-
-        output = "\n".join(
-            line for line in stdout.splitlines()
-            if not line.startswith("```")
-        )
-        candidates_ai = json.loads(output.strip())
-        if not isinstance(candidates_ai, list):
-            candidates_ai = []
-        # Validate and enrich with actual counts/examples from deferred dict
-        result = []
-        for item in candidates_ai:
-            p = item.get("pattern", "")
-            if not p:
-                continue
-            # Find actual data for this pattern. The AI may return a more specific
-            # prefix than the 2-token grouping keys in deferred (e.g. "gh auth status"
-            # vs key "gh auth"), so match both directions.
-            matching = {k: v for k, v in deferred.items()
-                        if k == p or k.startswith(p) or p.startswith(k)}
-            total = sum(v["count"] for v in matching.values())
-            all_exs = []
-            for v in matching.values():
-                all_exs.extend(v["examples"])
-            # Prefer examples that actually start with the recommended pattern.
-            # Fall back to all examples only if none match (e.g. pattern is more
-            # specific than the deferred grouping key).
-            exs = [e for e in all_exs if e.startswith(p)] or all_exs
-            result.append({
-                "pattern": p,
-                "examples": exs[:5],
-                "count": total or item.get("count", 0),
-                "rationale": item.get("rationale", ""),
-            })
-        _log(f"RESULT: {len(result)} recs: {[r['pattern'] for r in result]}")
-        return result
-    except Exception:
-        return []
+def _rec_already_covered(pattern: str, info: dict) -> bool:
+    """True if the pattern or any of its example commands is already engine-allowed."""
+    if _engine_verdict(pattern) == "allow":
+        return True
+    return any(_engine_verdict(ex) == "allow" for ex in info.get("examples", []))
 
 
 def load_rec_cache():
@@ -1211,7 +1070,7 @@ class TUI:
         self.rec_analyzing  = False
         self.rec_processing = False
         self._rec_proc      = None   # Popen handle for running skill
-        self._rec_gen       = 0
+        self._rec_result    = None   # parsed output from rec-analysis agent
 
         # Change log view state
         self.log_open   = False
@@ -1473,53 +1332,102 @@ class TUI:
     def _load_recs(self):
         if not rec_cache_stale():
             return  # nothing new in the log; keep existing self.recs
+        if self.rec_analyzing:
+            return  # already running
 
         with self._lock:
-            self._rec_gen += 1
-            gen       = self._rec_gen
             last_ts   = self._rec_last_ts
             prev_recs = list(self.recs)
             dismissed = set(self._rec_dismissed)
             self.rec_analyzing = True
         self._invalidate()
 
-        def work(gen=gen, last_ts=last_ts, prev_recs=prev_recs, dismissed=dismissed):
+        def pre_process(last_ts=last_ts, prev_recs=prev_recs, dismissed=dismissed):
             new_deferred, new_ts = _parse_deferred_commands(after_ts=last_ts)
+            candidates = {p: v for p, v in new_deferred.items()
+                          if p not in dismissed and not _rec_already_covered(p, v)}
 
-            def on_proc(p):
+            if not candidates:
                 with self._lock:
-                    if self._rec_gen == gen:
-                        self._rec_proc = p
+                    self._rec_last_ts  = new_ts
+                    self.rec_analyzing = False
+                save_rec_cache(prev_recs, dismissed, new_ts)
+                self._invalidate()
+                return
 
-            new_recs = analyze_recommendations(new_deferred, dismissed, on_proc=on_proc)
+            lines = []
+            for pattern, info in sorted(candidates.items(), key=lambda x: -x[1]["count"]):
+                exs = "  |  ".join(info["examples"][:3])
+                lines.append(f'  {info["count"]}x  {pattern}  e.g. "{exs}"')
+            prompt = f"rules_dir={RULES_DIR}\ncandidates:\n" + "\n".join(lines)
 
-            # Merge: update counts/examples for existing patterns, append new ones.
-            # Drop prev_recs that the engine now allows (i.e. were just implemented).
-            merged = {r["pattern"]: r for r in prev_recs
-                      if _engine_verdict(r["pattern"]) != "allow"}
-            for r in new_recs:
-                p = r["pattern"]
-                if p in merged:
-                    merged[p]["count"] += r["count"]
-                    for ex in r["examples"]:
-                        if ex not in merged[p]["examples"]:
-                            merged[p]["examples"].append(ex)
-                    merged[p]["examples"] = merged[p]["examples"][-5:]
-                else:
-                    merged[p] = r
-            recs = list(merged.values())
+            log_path = CACHE_DIR / "rec-analysis.log"
 
-            with self._lock:
-                if self._rec_gen != gen:
-                    return
-                self.recs           = recs
-                self._rec_last_ts   = new_ts
-                self.rec_analyzing  = False
+            def parse_rec_output(output_lines):
+                for line in reversed(output_lines):
+                    line = line.strip()
+                    if line.startswith("["):
+                        try:
+                            return json.loads(line)
+                        except Exception:
+                            pass
+                return []
 
-            save_rec_cache(recs, dismissed, new_ts)
-            self._invalidate()
+            def on_rec_done():
+                with self._lock:
+                    raw = self._rec_result or []
+                    new_recs = [r for r in raw
+                                if isinstance(r, dict) and r.get("pattern")]
+                    # Enrich: the agent may return a more specific prefix than the
+                    # 2-token grouping key — find actual counts/examples from candidates.
+                    enriched = []
+                    for item in new_recs:
+                        p = item["pattern"]
+                        matching = {k: v for k, v in candidates.items()
+                                    if k == p or k.startswith(p) or p.startswith(k)}
+                        total = sum(v["count"] for v in matching.values())
+                        all_exs = [e for v in matching.values() for e in v["examples"]]
+                        exs = [e for e in all_exs if e.startswith(p)] or all_exs
+                        enriched.append({
+                            "pattern":   p,
+                            "examples":  exs[:5] or item.get("examples", []),
+                            "count":     total or item.get("count", 0),
+                            "rationale": item.get("rationale", ""),
+                        })
+                    # Merge with prev_recs, dropping any that are now engine-allowed.
+                    merged = {r["pattern"]: r for r in prev_recs
+                              if _engine_verdict(r["pattern"]) != "allow"}
+                    for r in enriched:
+                        p = r["pattern"]
+                        if p in merged:
+                            merged[p]["count"] += r["count"]
+                            for ex in r["examples"]:
+                                if ex not in merged[p]["examples"]:
+                                    merged[p]["examples"].append(ex)
+                            merged[p]["examples"] = merged[p]["examples"][-5:]
+                        else:
+                            merged[p] = r
+                    recs = list(merged.values())
+                    self.recs         = recs
+                    self._rec_last_ts = new_ts
+                save_rec_cache(recs, dismissed, new_ts)
 
-        threading.Thread(target=work, daemon=True).start()
+            if not self._spawn_claude_task(
+                log_path,
+                prompt,
+                name="unfence: rec-analysis",
+                proc_attr="_rec_proc",
+                active_attr="rec_analyzing",
+                result_attr="_rec_result",
+                parse_result=parse_rec_output,
+                on_done=on_rec_done,
+                agent="rec-analysis",
+            ):
+                with self._lock:
+                    self.rec_analyzing = False
+                self._invalidate()
+
+        threading.Thread(target=pre_process, daemon=True).start()
 
     def _load_auto_allow(self):
         if self._auto_allow_active:
