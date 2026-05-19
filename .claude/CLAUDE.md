@@ -228,11 +228,12 @@ The `rules/` directory files are **not tracked by git** (only a `.gitkeep` is co
 Steps every time:
 1. `git diff` — confirm only your own changes are staged/unstaged.
 2. If unrelated changes are present (from other agents), `git stash` them first, commit your change, then `git stash pop`.
-3. Commit with a concise message and push: `git push`.
+3. **Review and update `README.md`** for any stale descriptions before staging (see README Sync below). README changes belong in the same commit as the code change.
+4. Commit with a concise message and push: `git push`.
 
 ## README Sync
 
-After any change that affects user-visible behavior (engine logic, TUI features, setup steps, sample-rule patterns), check `README.md` for stale descriptions and update them. Keep the README lean — fix outdated information, don't expand it. The README is the only user-facing doc; CLAUDE.md is internal.
+After any change that affects user-visible behavior (engine logic, TUI features, setup steps, sample-rule patterns), check `README.md` for stale descriptions and update them in the same commit. Keep the README lean — fix outdated information, don't expand it. The README is the only user-facing doc; CLAUDE.md is internal.
 
 ## Bash Version Requirement
 

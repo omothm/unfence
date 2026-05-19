@@ -70,6 +70,20 @@ run_test "array element arithmetic value → allow"       'arr[0]=$(( 1 + 2 ))' 
 # In the engine-test fixture no rule handles 'dangerous', so it defers.
 run_test "array element with subshell value → defers"   'arr[0]=$(dangerous)'                      "defer"
 
+# --- case-arm pattern normalization ---
+# split_commands splits "case $x in\n  FOO*) cmd ;;\nesac" on newlines/semicolons.
+# The arm label token (e.g. "FOO*)") is shell syntax, not a command name; the
+# engine strips it so downstream rules classify the inner command.
+# A bare ")" (subshell closer split off by split_commands) is always allow.
+run_test "bare ) → allow"                            ')'                              "allow"
+run_test "lone case arm label, no command → allow"   'MERGED*)'                       "allow"
+run_test "wildcard arm label, no command → allow"    '*)'                             "allow"
+run_test "case arm + allow cmd → allow"              'MERGED*) echo hello'            "allow"
+run_test "numeric arm + allow cmd → allow"           '0) echo done'                   "allow"
+run_test "wildcard arm + allow cmd → allow"          '*) sleep 30'                    "allow"
+run_test "case arm + deny cmd → deny"                'ok*) rm -rf /tmp/x'             "deny"
+run_test "case arm + unknown cmd → defer"            'OPEN) unknowncmd --flag'        "defer"
+
 # --- deny:<message> passthrough ---
 # Rules can return "deny:<message>" to attach a reason to the denial.
 # The engine must surface the message in permissionDecisionReason.

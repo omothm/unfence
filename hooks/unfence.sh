@@ -277,6 +277,14 @@ classify_single() {
     [[ $n_t -eq 0 ]] && echo "allow" && return  # empty subshell
   fi
 
+  # Case-arm pattern: PATTERN) cmd — strip the label so rules see the inner command.
+  # A bare ")" is a subshell closer (shell syntax, no command) → allow, mirroring "}".
+  [[ "${TOKENS[0]}" == ")" ]] && echo "allow" && return
+  if [[ "${TOKENS[0]}" == *")" && "${TOKENS[0]}" != "(" ]]; then
+    TOKENS=("${TOKENS[@]:1}")
+    [[ ${#TOKENS[@]} -eq 0 ]] && echo "allow" && return  # lone arm label, no command
+  fi
+
   local normalized="${TOKENS[*]}"
   log "  classify[$depth]: $normalized"
 

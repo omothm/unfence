@@ -35,8 +35,10 @@ This gives you a working starting point. The samples already cover common patter
 
 **3. Register the hooks in `~/.claude/settings.json`:**
 ```json
-"PreToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command",
-  "command": "~/.claude/unfence/hooks/unfence.sh", "timeout": 5 }] }],
+"PreToolUse": [
+  { "matcher": "Bash",    "hooks": [{ "type": "command", "command": "~/.claude/unfence/hooks/unfence.sh", "timeout": 5 }] },
+  { "matcher": "Monitor", "hooks": [{ "type": "command", "command": "~/.claude/unfence/hooks/unfence.sh", "timeout": 5 }] }
+],
 "Stop": [{ "hooks": [{ "type": "command",
   "command": "~/.claude/unfence/hooks/sync-permissions-hook.sh" }] }]
 ```
