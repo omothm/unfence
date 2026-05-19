@@ -93,3 +93,32 @@ run_test "case arm + VAR=glob → allow"               'pages) PATTERN="*.page"'
 # without a DENY_REASONS entry, so it verifies the fallback message path.
 run_test_deny_reason "plain deny: fallback reason" \
   'rm -rf /'  'Command matches a DENY rule'
+
+# --- user-defined function tracking ---
+# When a function is defined and called in the same command, the engine pre-scans
+# the definition, evaluates the body, registers the verdict, and resolves the call.
+# echo hello = allow; rm -rf / = deny; unknowncmd = defer in both rule suites.
+
+# Safe body: call resolves to allow
+run_test "fn def+call, safe body → allow" \
+  $'safe_fn() { echo hello; }\nsafe_fn'  "allow"
+
+# Dangerous body: call resolves to deny (definition also denies via existing path)
+run_test "fn def+call, deny body → deny" \
+  $'bad_fn() { rm -rf /; }\nbad_fn'  "deny"
+
+# Unknown body: function NOT registered; call defers
+run_test "fn def+call, defer body → defer" \
+  $'unk_fn() { unknowncmd; }\nunk_fn'  "defer"
+
+# Undefined function: no definition seen anywhere → defer (no regression)
+run_test "fn call without definition → defer" \
+  'my_completely_undef_fn'  "defer"
+
+# Call with arguments: lookup uses TOKENS[0], ignores extra args
+run_test "fn call with args, safe body → allow" \
+  $'greet() { echo hello; }\ngreet --name world'  "allow"
+
+# Multi-line function definition (newlines instead of semicolons)
+run_test "multiline fn def+call, safe body → allow" \
+  $'helper() {\n  echo hello\n}\nhelper'  "allow"

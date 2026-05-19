@@ -33,10 +33,130 @@ PROJECT_CONFIG=""
 # Rules read this to resolve leading $VAR references in their tokens.
 INLINE_VARS="{}"
 
+# Populated by _scan_and_register_fns for the current invocation.
+# Maps user-defined function names to their body's worst verdict.
+# Only entries whose body verdict is non-defer are stored (skip-registration policy).
+declare -A _FN_REGISTRY=()
+
 log() {
   [[ -n "${NO_LOG:-}" ]] && return 0
   printf '[%s] [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$SESSION_ID" "$*" \
     >> "$LOG_FILE" 2>/dev/null
+}
+
+# ── User-defined function registry ────────────────────────────────────────────
+
+# Return the worse of two verdicts: deny > ask > defer > allow.
+_fn_worst() {
+  local a="$1" b="$2"
+  [[ "$a" == deny* || "$b" == deny* ]] && echo "deny" && return
+  [[ "$a" == "ask"  || "$b" == "ask"  ]] && echo "ask"  && return
+  [[ "$a" == "defer" || "$b" == "defer" ]] && echo "defer" && return
+  echo "allow"
+}
+
+# Count unquoted { and } in a string. Outputs: "<open> <close>"
+_count_unquoted_braces() {
+  local s="$1" open=0 close=0 in_single=false in_double=false
+  local i=0 len=${#s}
+  while (( i < len )); do
+    local c="${s:$i:1}"
+    if $in_single; then
+      [[ "$c" == "'" ]] && in_single=false
+    elif $in_double; then
+      [[ "$c" == "\\" ]] && (( i++ ))
+      [[ "$c" == '"'  ]] && in_double=false
+    else
+      case "$c" in
+        "'") in_single=true ;;
+        '"') in_double=true ;;
+        '{') (( open++ )) ;;
+        '}') (( close++ )) ;;
+      esac
+    fi
+    (( i++ ))
+  done
+  echo "$open $close"
+}
+
+# Scan a raw command for function definitions and populate _FN_REGISTRY.
+# Must be called before the main classification loop.
+# Only registers functions whose body verdict is non-defer (skip-registration policy).
+_scan_and_register_fns() {
+  local raw_cmd="$1"
+  local _fn_state="normal" _fn_name="" _fn_depth=0 _fn_bv="allow"
+  local part
+
+  while IFS= read -r -d '' part; do
+    part=$(echo "$part" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+    [[ -z "$part" ]] && continue
+
+    if [[ "$_fn_state" == "normal" ]]; then
+      local tokens=()
+      while IFS= read -r t; do [[ -n "$t" ]] && tokens+=("$t"); done < <(tokenize "$part")
+      [[ ${#tokens[@]} -eq 0 ]] && continue
+
+      local fname=""
+      # NAME()  — no space before ()
+      if [[ "${tokens[0]}" =~ ^([A-Za-z_][A-Za-z0-9_]*)\(\)$ ]]; then
+        fname="${BASH_REMATCH[1]}"
+      # NAME () — space before ()
+      elif [[ ${#tokens[@]} -ge 2 && "${tokens[1]}" == "()" ]]; then
+        [[ "${tokens[0]}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && fname="${tokens[0]}"
+      # function NAME or function NAME()
+      elif [[ "${tokens[0]}" == "function" && ${#tokens[@]} -ge 2 ]]; then
+        local t1="${tokens[1]%\(\)}"
+        [[ "$t1" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && fname="$t1"
+      fi
+
+      if [[ -n "$fname" && "$part" == *"{"* ]]; then
+        _fn_name="$fname"
+        _fn_state="in_fn"
+        _fn_bv="allow"
+
+        local counts; counts=$(_count_unquoted_braces "$part")
+        _fn_depth=$(( ${counts% *} - ${counts#* } ))
+
+        # Evaluate any body content on the same line as the opening {.
+        local body_here="${part#*\{}"
+        if (( _fn_depth <= 0 )); then
+          # Entire function on one part — strip trailing } (and anything after) from body.
+          body_here="${body_here%\}*}"
+        fi
+        if [[ -n "${body_here//[[:space:]]/}" ]]; then
+          local bv; bv=$(classify_single "$body_here")
+          [[ "$bv" == deny* ]] && bv="deny"
+          _fn_bv=$(_fn_worst "$_fn_bv" "$bv")
+        fi
+
+        if (( _fn_depth <= 0 )); then
+          if [[ "$_fn_bv" != "defer" ]]; then
+            _FN_REGISTRY["$_fn_name"]="$_fn_bv"
+            log "  fn-scan: $_fn_name → $_fn_bv"
+          fi
+          _fn_state="normal"
+        fi
+        continue
+      fi
+
+    elif [[ "$_fn_state" == "in_fn" ]]; then
+      local counts; counts=$(_count_unquoted_braces "$part")
+      _fn_depth=$(( _fn_depth + ${counts% *} - ${counts#* } ))
+
+      local bv; bv=$(classify_single "$part")
+      [[ "$bv" == deny* ]] && bv="deny"
+      _fn_bv=$(_fn_worst "$_fn_bv" "$bv")
+
+      if (( _fn_depth <= 0 )); then
+        if [[ "$_fn_bv" != "defer" ]]; then
+          _FN_REGISTRY["$_fn_name"]="$_fn_bv"
+          log "  fn-scan: $_fn_name → $_fn_bv"
+        fi
+        _fn_state="normal"
+      fi
+      continue
+    fi
+  done < <(split_commands "$raw_cmd")
 }
 
 _output() {
@@ -337,6 +457,17 @@ classify_single() {
     esac
   done
 
+  # ── User-defined function lookup ──────────────────────────────────────────────
+  # If all rules deferred, check whether this command name was registered as a
+  # user-defined function in the current invocation and return its stored verdict.
+  local _fn_v="${_FN_REGISTRY[${TOKENS[0]}]:-}"
+  if [[ -n "$_fn_v" ]]; then
+    log "  -> $_fn_v  (fn:${TOKENS[0]})"
+    _LAST_RULE="[fn:${TOKENS[0]}]"
+    _LAST_VERDICT="$_fn_v"
+    echo "$_fn_v"; return
+  fi
+
   log "  -> defer (no rule decided)"
   _LAST_DEFER_CMD="$normalized"
   echo "defer"
@@ -371,6 +502,8 @@ if [[ -n "$EVAL_MODE" ]]; then
   if [[ -z "$RAW_COMMAND" ]]; then
     printf '{"verdict":"allow","rule":null}\n'; exit 0
   fi
+
+  _scan_and_register_fns "$RAW_COMMAND"
 
   has_deny=false; has_ask=false; all_allow=true
   deny_rule=""; ask_rule=""; allow_rule=""
@@ -471,6 +604,8 @@ fi
 
 log "CWD $SESSION_CWD"
 log "INPUT $RAW_COMMAND"
+
+_scan_and_register_fns "$RAW_COMMAND"
 
 has_deny=false
 has_ask=false
