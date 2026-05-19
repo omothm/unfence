@@ -222,6 +222,55 @@ run_test_deny_reason() {
 }
 export -f run_test_deny_reason
 
+# run_test_eval_cwd "desc" "cmd" "expected" ['{"key":...}']
+# Runs the engine in EVAL_MODE with a self-contained temp rules dir.
+# The inline rule echoes "allow" when PROJECT_CONFIG is non-empty, "defer" otherwise.
+# When config_json is provided, writes it to <cwd>/.claude/unfence.json and sets EVAL_CWD.
+# This tests that EVAL_CWD causes the engine to load PROJECT_CONFIG in EVAL_MODE.
+run_test_eval_cwd() {
+  local description="$1" command="$2" expected="$3" config_json="${4:-}"
+  local seq=$(( ++_SEQ ))
+  (( TOTAL++ ))
+
+  if (( _ACTIVE >= _MAX_PARALLEL )); then
+    wait -n 2>/dev/null
+    (( _ACTIVE-- ))
+  fi
+
+  local result_file="$_TMPDIR/$seq"
+  (
+    local cwd_dir rules_dir output actual
+    cwd_dir=$(mktemp -d)
+    rules_dir=$(mktemp -d)
+
+    # Minimal self-contained rule: allow when PROJECT_CONFIG is set, defer otherwise.
+    printf '%s\n' \
+      '#!/usr/bin/env bash' \
+      'if [[ -n "$PROJECT_CONFIG" ]]; then echo allow; else echo defer; fi' \
+      > "$rules_dir/1-cfg.sh"
+
+    if [[ -n "$config_json" ]]; then
+      mkdir -p "$cwd_dir/.claude"
+      printf '%s' "$config_json" > "$cwd_dir/.claude/unfence.json"
+    fi
+
+    output=$(UNFENCE_RULES_DIR="$rules_dir" EVAL_MODE=1 CMD="$command" \
+             EVAL_CWD="$cwd_dir" bash "$ENGINE" 2>/dev/null)
+    rm -rf "$cwd_dir" "$rules_dir"
+
+    actual=$(jq -r '.verdict // empty' <<< "$output" 2>/dev/null)
+    [[ -z "$actual" ]] && actual="defer"
+
+    if [[ "$actual" == "$expected" ]]; then
+      printf 'P\t%s\t%s\n' "$description" "$expected" > "$result_file"
+    else
+      printf 'F\t%s\t%s\t%s\n' "$description" "$expected" "$actual" > "$result_file"
+    fi
+  ) &
+  (( _ACTIVE++ ))
+}
+export -f run_test_eval_cwd
+
 echo "═══════════════════════════════════════════════════════════════════"
 echo " unfence test suite — rules"
 echo "═══════════════════════════════════════════════════════════════════"

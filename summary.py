@@ -962,9 +962,11 @@ def load_shadow_cache(rules):
 
 ENGINE = PROJECT_DIR / "hooks" / "unfence.sh"
 
-def evaluate_command(cmd: str):
+def evaluate_command(cmd: str, cwd: str = ""):
     """Run cmd through the full engine pipeline. Returns (verdict, rule_name | None, deferred_parts)."""
     env = {**os.environ, "EVAL_MODE": "1", "CMD": cmd, "NO_LOG": "1"}
+    if cwd:
+        env["EVAL_CWD"] = cwd
     try:
         r = subprocess.run(
             ["bash", str(ENGINE)], env=env,
@@ -2073,7 +2075,7 @@ class TUI:
                 lines.append([(A_DIM, current)])
         return lines
 
-    def _run_eval_async(self, cmd: str, result_attr: str, highlight: bool = True):
+    def _run_eval_async(self, cmd: str, result_attr: str, highlight: bool = True, cwd: str = ""):
         """Run cmd through the engine in a background thread, storing result in self.<result_attr>."""
         with self._lock:
             setattr(self, result_attr, {"running": True, "verdict": "…",
@@ -2082,7 +2084,7 @@ class TUI:
         self.dirty = True
 
         def work():
-            verdict, rule_name, deferred_parts = evaluate_command(cmd)
+            verdict, rule_name, deferred_parts = evaluate_command(cmd, cwd=cwd)
             with self._lock:
                 rules = list(self.rules)
             # rule_name may be a chain like "0-unwrap.sh → 1-lists.sh"
@@ -3552,8 +3554,8 @@ class TUI:
                         self._invalidate()
                 elif ev in (ord('e'), ord('E')) and self.deferlog_entries:
                     if not (self.deferlog_eval_result or {}).get("running"):
-                        _, cmd, *_ = self.deferlog_entries[self.deferlog_cursor]
-                        self._run_eval_async(cmd, 'deferlog_eval_result', highlight=False)
+                        _, cmd, cwd = self.deferlog_entries[self.deferlog_cursor]
+                        self._run_eval_async(cmd, 'deferlog_eval_result', highlight=False, cwd=cwd)
                 elif ev in (ord('c'), ord('C')) and self.deferlog_entries:
                     _, cmd, *_ = self.deferlog_entries[self.deferlog_cursor]
                     try:

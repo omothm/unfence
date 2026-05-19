@@ -174,7 +174,8 @@ _cmd_hash() {
 # initial "Analysis not run" state.
 tui_start_with_aa_state() {
     local result_json="$1"
-    local entry_subs_json="${2:-{}}"
+    local entry_subs_json="${2}"
+    [[ -z "$entry_subs_json" ]] && entry_subs_json='{}'
     local entry_cmd="${3:-}"
     local unfence_dir; unfence_dir="$(dirname "$TUI_SCRIPT")"
     local log_file="$unfence_dir/logs/unfence.log"

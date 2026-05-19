@@ -122,3 +122,13 @@ run_test "fn call with args, safe body → allow" \
 # Multi-line function definition (newlines instead of semicolons)
 run_test "multiline fn def+call, safe body → allow" \
   $'helper() {\n  echo hello\n}\nhelper'  "allow"
+
+# --- EVAL_MODE PROJECT_CONFIG loading via EVAL_CWD ---
+# The inline rule in run_test_eval_cwd allows when PROJECT_CONFIG is non-empty.
+# With EVAL_CWD pointing to a dir containing .claude/unfence.json → PROJECT_CONFIG
+# is loaded → rule sees it → allow.
+# Without an unfence.json (EVAL_CWD set but no config file) → PROJECT_CONFIG empty → defer.
+run_test_eval_cwd "EVAL_CWD + unfence.json present → PROJECT_CONFIG loaded → allow" \
+  'somecommand'  "allow"  '{"test":"marker"}'
+run_test_eval_cwd "EVAL_CWD set but no unfence.json → PROJECT_CONFIG empty → defer" \
+  'somecommand'  "defer"  ""

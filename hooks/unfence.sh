@@ -494,10 +494,13 @@ if [[ -f "$DISABLED_FLAG" ]]; then
 fi
 
 # ── EVAL_MODE: called by the summary TUI for live evaluation ──────────────────
-# Usage: EVAL_MODE=1 CMD="<raw command>" bash unfence.sh
+# Usage: EVAL_MODE=1 CMD="<raw command>" [EVAL_CWD="<project_dir>"] bash unfence.sh
 # Output: {"verdict":"allow|deny|ask|defer","rule":"filename or null"}
 # On defer: also includes "parts": ["cmd1","cmd2",...] listing the unmatched parts.
 if [[ -n "$EVAL_MODE" ]]; then
+  if [[ -n "${EVAL_CWD:-}" && -f "${EVAL_CWD}/.claude/unfence.json" ]]; then
+    PROJECT_CONFIG=$(cat "${EVAL_CWD}/.claude/unfence.json")
+  fi
   RAW_COMMAND=$(printf '%s' "${CMD:-}" | sed '/^[[:space:]]*#/d')
   if [[ -z "$RAW_COMMAND" ]]; then
     printf '{"verdict":"allow","rule":null}\n'; exit 0
