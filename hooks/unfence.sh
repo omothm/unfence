@@ -259,17 +259,19 @@ classify_single() {
 
   # Subshell group normalization: (cmd ...) and (cmd ...) &
   # Shell syntax, not a command — strip the ( ) wrapper and optional trailing &
-  # so downstream rules see the real command.  Requires ) to be a separate token
-  # (i.e. a space before it), which is the form bash-generated commands use.
+  # so downstream rules see the real command.  Handles both spaced ( cmd ) and
+  # fused (cmd) forms.
   if [[ "${TOKENS[0]}" == \(* ]]; then
     local n_t=${#TOKENS[@]}
     # Strip trailing & when the preceding token is )
     if (( n_t >= 3 )) && [[ "${TOKENS[$((n_t-1))]}" == "&" && "${TOKENS[$((n_t-2))]}" == ")" ]]; then
       TOKENS=("${TOKENS[@]:0:$((n_t-2))}"); n_t=${#TOKENS[@]}
     fi
-    # Strip trailing )
+    # Strip trailing ) — either as a separate token or fused to the last token.
     if (( n_t >= 2 )) && [[ "${TOKENS[$((n_t-1))]}" == ")" ]]; then
       TOKENS=("${TOKENS[@]:0:$((n_t-1))}"); n_t=${#TOKENS[@]}
+    elif [[ "${TOKENS[$((n_t-1))]}" == *")" ]]; then
+      local _lt="${TOKENS[$((n_t-1))]}"; TOKENS[$((n_t-1))]="${_lt%)}"
     fi
     # Strip leading ( from first token (may be fused: "(cmd" → "cmd")
     TOKENS[0]="${TOKENS[0]#(}"
@@ -283,6 +285,11 @@ classify_single() {
   if [[ "${TOKENS[0]}" == *")" && "${TOKENS[0]}" != "(" ]]; then
     TOKENS=("${TOKENS[@]:1}")
     [[ ${#TOKENS[@]} -eq 0 ]] && echo "allow" && return  # lone arm label, no command
+    # Recurse so the inner command goes through the full normalization pipeline
+    # (VAR= check, brace/subshell stripping, etc.) rather than jumping straight to rules.
+    local _inner_verdict
+    _inner_verdict=$(classify_single "${TOKENS[*]}" $((depth+1)))
+    [[ -n "$_inner_verdict" ]] && echo "$_inner_verdict" && return
   fi
 
   local normalized="${TOKENS[*]}"

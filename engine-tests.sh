@@ -83,6 +83,8 @@ run_test "numeric arm + allow cmd → allow"           '0) echo done'           
 run_test "wildcard arm + allow cmd → allow"          '*) sleep 30'                    "allow"
 run_test "case arm + deny cmd → deny"                'ok*) rm -rf /tmp/x'             "deny"
 run_test "case arm + unknown cmd → defer"            'OPEN) unknowncmd --flag'        "defer"
+run_test "case arm + VAR=value → allow"              'components) PATTERN="*.cls"'    "allow"
+run_test "case arm + VAR=glob → allow"               'pages) PATTERN="*.page"'        "allow"
 
 # --- deny:<message> passthrough ---
 # Rules can return "deny:<message>" to attach a reason to the denial.
