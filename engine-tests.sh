@@ -86,6 +86,17 @@ run_test "case arm + unknown cmd → defer"            'OPEN) unknowncmd --flag'
 run_test "case arm + VAR=value → allow"              'components) PATTERN="*.cls"'    "allow"
 run_test "case arm + VAR=glob → allow"               'pages) PATTERN="*.page"'        "allow"
 
+# Multi-pattern case-arm alternatives: Pat1|Pat2) — | is a case OR separator,
+# not a pipeline.  split_commands must not split on it; the whole token should
+# reach classify_single as one unit and be stripped by the case-arm path.
+run_test "multi-pattern arm, lone → allow"           'Superseded|Merged)'             "allow"
+run_test "multi-pattern arm + allow cmd → allow"     'Superseded|Merged) echo done'   "allow"
+run_test "multi-pattern arm + deny cmd → deny"       'Superseded|Merged) rm -rf /x'   "deny"
+run_test "three-pattern arm, lone → allow"           '*-Failed|Designing-Failed|*)'   "allow"
+run_test "three-pattern arm + allow cmd → allow"     '*-Failed|Designing-Failed|*) echo fail'  "allow"
+run_test "normal pipeline still splits (spaces) → allow" 'echo foo | cat'             "allow"
+run_test "normal pipeline no spaces still splits → allow"  'echo|cat'                 "allow"
+
 # --- deny:<message> passthrough ---
 # Rules can return "deny:<message>" to attach a reason to the denial.
 # The engine must surface the message in permissionDecisionReason.

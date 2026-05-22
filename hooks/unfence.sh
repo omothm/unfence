@@ -262,7 +262,25 @@ split_commands() {
         if [[ "${cmd:$i:2}" == "||" ]]; then printf '%s\0' "$current"; current=""; (( i += 2 )); continue; fi
         if [[ "${cmd:$i:2}" == "&&" ]]; then printf '%s\0' "$current"; current=""; (( i += 2 )); continue; fi
         if [[ "$ch" == ";" ]];       then printf '%s\0' "$current"; current=""; (( i++ ));    continue; fi
-        if [[ "$ch" == "|" ]];       then printf '%s\0' "$current"; current=""; (( i++ ));    continue; fi
+        if [[ "$ch" == "|" ]]; then
+          # Case-arm pattern OR separator: Pat1|Pat2) — no spaces around |, right
+          # side ends with ) before any whitespace.  Don't split; accumulate so
+          # classify_single sees the full pattern token (e.g. "Superseded|Merged)")
+          # and strips it via the case-arm normalization path.
+          local _prev="${current: -1}" _next="${cmd:$((i+1)):1}"
+          if [[ -n "$_prev" && "$_prev" != " " && "$_prev" != $'\t' && \
+                -n "$_next" && "$_next" != " " && "$_next" != $'\t' ]]; then
+            local _jl=$((i+1)) _arm=false
+            while (( _jl < len )); do
+              local _lc="${cmd:$_jl:1}"
+              [[ "$_lc" == ")" ]] && _arm=true && break
+              [[ "$_lc" == " " || "$_lc" == $'\t' ]] && break
+              (( _jl++ ))
+            done
+            if $_arm; then current+="$ch"; (( i++ )); continue; fi
+          fi
+          printf '%s\0' "$current"; current=""; (( i++ )); continue
+        fi
         if [[ "$ch" == $'\n' ]];     then printf '%s\0' "$current"; current=""; (( i++ ));    continue; fi
         # Inline comment: # preceded by whitespace (or nothing) starts a comment → skip to EOL.
         # Only applies at top-level (outside brackets/parens), matching bash semantics.
