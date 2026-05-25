@@ -1020,6 +1020,15 @@ def disable_terminal_protocols():
     _write_tty("\033[<u")       # pop kitty keyboard protocol
 
 
+def _fmt_elapsed(started_at: float) -> str:
+    """Format elapsed seconds since started_at as a human-readable string."""
+    s = int(time.monotonic() - started_at)
+    if s < 60:
+        return f"{s}s"
+    m, s = divmod(s, 60)
+    return f"{m}m {s}s"
+
+
 # ── TUI ───────────────────────────────────────────────────────────────────────
 
 class TUI:
@@ -1125,6 +1134,14 @@ class TUI:
         self.eval_allowing     = False   # Claude subprocess running
         self._eval_allow_proc  = None
         self.eval_allow_result = None    # None | dict from Claude JSON output
+
+        # Background tasks view state
+        self._bg_tasks: list[dict] = []  # protected by self._lock; each entry: name/purpose/started_at/started_str/pid/proc_attr/active_attr
+        self.bgtasks_open   = False
+        self.bgtasks_cursor = 0          # selected task index (item-units)
+        self.bgtasks_scroll = 0          # scroll offset (row-units)
+        self._bgtasks_confirm: "dict | str | None" = None  # task-dict | "all" | None
+        self._bgtasks_timer_tick = 0.0   # monotonic; for 1-Hz timer re-render
 
         # Body cursor (selected rule index in main list)
         self.body_cursor            = 0
@@ -1329,6 +1346,7 @@ class TUI:
             parse_result=parse_shadow_output,
             on_done=on_shadow_done,
             agent="shadow-analysis",
+            purpose="Detects rules that shadow other rules",
         )
 
     @staticmethod
@@ -1355,6 +1373,11 @@ class TUI:
             prev_recs = list(self.recs)
             dismissed = set(self._rec_dismissed)
             self.rec_analyzing = True
+        self._register_bg_task(
+            "unfence: rec-analysis",
+            "Analyzes deferred commands for safe auto-allow patterns",
+            "_rec_proc", "rec_analyzing",
+        )
         self._invalidate()
 
         def pre_process(last_ts=last_ts, prev_recs=prev_recs, dismissed=dismissed):
@@ -1366,6 +1389,7 @@ class TUI:
                 with self._lock:
                     self._rec_last_ts  = new_ts
                     self.rec_analyzing = False
+                self._deregister_bg_task("_rec_proc")
                 save_rec_cache(prev_recs, dismissed, new_ts)
                 self._invalidate()
                 return
@@ -1440,6 +1464,7 @@ class TUI:
                 parse_result=parse_rec_output,
                 on_done=on_rec_done,
                 agent="rec-analysis",
+                purpose="Analyzes deferred commands for safe auto-allow patterns",
             ):
                 with self._lock:
                     self.rec_analyzing = False
@@ -1458,6 +1483,11 @@ class TUI:
             gen     = self._auto_allow_gen
             last_ts = self._auto_allow_last_ts
             self._auto_allow_active = True
+        self._register_bg_task(
+            "auto-allow-analyzer",
+            "Automatically identifies and adds safe commands to allow rules",
+            "_auto_allow_proc", "_auto_allow_active",
+        )
         self._invalidate()
 
         def work(gen=gen, last_ts=last_ts):
@@ -1507,6 +1537,7 @@ class TUI:
                     if self._auto_allow_gen == gen:
                         self._auto_allow_active           = False
                         self._auto_allow_analyzing_hashes = set()
+                self._deregister_bg_task("_auto_allow_proc")
                 save_auto_allow_state(new_ts, current_result, merged_subs, merged_no_more,
                                       merged_analyzed)
                 self._invalidate()
@@ -1544,6 +1575,7 @@ class TUI:
                 result_attr="_auto_allow_result",
                 agent="auto-allow-analyzer",
                 on_done=on_done,
+                purpose="Automatically identifies and adds safe commands to allow rules",
             )
             if not ok:
                 with self._lock:
@@ -1634,6 +1666,7 @@ class TUI:
             proc_attr='_rec_proc', active_attr='rec_processing',
             on_start=lambda: self._rec_accepted.clear(),
             on_done=on_done,
+            purpose="Implements accepted recommendations into allow rules",
         ):
             return
 
@@ -1701,7 +1734,7 @@ class TUI:
                   shd_key, rec_key]
         if aa_active:
             tokens.append("[auto-allow: analyzing\u2026]")
-        tokens += ["[c] changelog", "[d] deferlog", "[q] quit"]
+        tokens += ["[b] tasks", "[c] changelog", "[d] deferlog", "[q] quit"]
         return tokens
 
     def _wrap_ctrl_tokens(self, tokens: list[str], inner: int) -> list[str]:
@@ -1798,6 +1831,8 @@ class TUI:
             if self._detail_copy_flash_msg is not None:
                 return self.CTRL_ROWS
             return 1 + len(self._wrap_ctrl_tokens(self._detail_ctrl_tokens(), inner))
+        if self.bgtasks_open:
+            return self.CTRL_ROWS
         if self.eval_open:
             return 1 + len(self._eval_ctrl_lines(inner + 2))  # +2: unbordered uses full cols
         if self.shadow_open or self.rec_open or self.log_open:
@@ -1928,6 +1963,28 @@ class TUI:
             return True
         return False
 
+    def _register_bg_task(self, name: str, purpose: str, proc_attr: str, active_attr: str):
+        """Add a placeholder entry to _bg_tasks when work begins (before subprocess starts)."""
+        with self._lock:
+            if any(t["proc_attr"] == proc_attr for t in self._bg_tasks):
+                return
+            self._bg_tasks.append({
+                "name":        name,
+                "purpose":     purpose,
+                "started_at":  time.monotonic(),
+                "started_str": time.strftime("%H:%M:%S"),
+                "pid":         None,
+                "proc_attr":   proc_attr,
+                "active_attr": active_attr,
+            })
+        self.dirty = True
+
+    def _deregister_bg_task(self, proc_attr: str):
+        """Remove a task entry from _bg_tasks (e.g. on early exit before subprocess starts)."""
+        with self._lock:
+            self._bg_tasks = [t for t in self._bg_tasks if t["proc_attr"] != proc_attr]
+        self.dirty = True
+
     def _cancel_proc(self, proc_attr: str, active_attr: str):
         """Terminate a running background Claude process and clear its state."""
         with self._lock:
@@ -1938,6 +1995,7 @@ class TUI:
         with self._lock:
             setattr(self, proc_attr, None)
             setattr(self, active_attr, False)
+            self._bg_tasks = [t for t in self._bg_tasks if t["proc_attr"] != proc_attr]
         self._invalidate()
 
     def _spawn_claude_task(
@@ -1953,6 +2011,7 @@ class TUI:
         parse_result=None,
         on_done=None,
         agent: str | None = None,
+        purpose: str = "",
     ) -> bool:
         """Spawn a Claude subprocess and poll it in a background thread.
 
@@ -1967,6 +2026,7 @@ class TUI:
                           Default: last JSON line parsed as dict.
             on_done:      Callable() run after state is cleared, before _invalidate().
             agent:        If set, use --agent <name> instead of --model + -n <name>.
+            purpose:      Human-readable description shown in the Background Tasks view.
 
         Returns True if the process was successfully spawned.
         """
@@ -2000,6 +2060,21 @@ class TUI:
                 setattr(self, result_attr, None)
             if on_start:
                 on_start()
+            existing = next((t for t in self._bg_tasks if t["proc_attr"] == proc_attr), None)
+            if existing:
+                existing["pid"]         = proc.pid
+                existing["started_at"]  = time.monotonic()
+                existing["started_str"] = time.strftime("%H:%M:%S")
+            else:
+                self._bg_tasks.append({
+                    "name":        name,
+                    "purpose":     purpose,
+                    "started_at":  time.monotonic(),
+                    "started_str": time.strftime("%H:%M:%S"),
+                    "pid":         proc.pid,
+                    "proc_attr":   proc_attr,
+                    "active_attr": active_attr,
+                })
         self.dirty = True
 
         def _default_parse(lines):
@@ -2019,6 +2094,7 @@ class TUI:
             with self._lock:
                 setattr(self, proc_attr, None)
                 setattr(self, active_attr, False)
+                self._bg_tasks = [t for t in self._bg_tasks if t["proc_attr"] != proc_attr]
                 if result_attr is not None:
                     try:
                         lines = log_path.read_text().splitlines()
@@ -2175,6 +2251,7 @@ class TUI:
             proc_attr='_eval_allow_proc', active_attr='eval_allowing',
             result_attr='eval_allow_result',
             on_done=on_done,
+            purpose="Generates a new allow rule for the evaluated command",
         )
 
     def _modify_detail_rule(self, rule: Path, modify_prompt: str):
@@ -2225,6 +2302,7 @@ class TUI:
             result_attr='detail_modify_result',
             parse_result=parse_modify,
             on_done=on_done,
+            purpose="Rewrites a rule based on your instructions",
         )
 
     def _scroll_to_rule(self, rule_idx: int):
@@ -2536,10 +2614,12 @@ class TUI:
             status_seg = (CP2 | A_BOLD, "  DISABLED")
         else:
             status_seg = (CP6 | A_BOLD, "  ENABLED")
-        title_row = ContentLine(
-            [(A_NORMAL, " "), (A_BOLD, hdr), status_seg, (A_DIM, ref)],
-            bordered=False,
-        )
+        with self._lock:
+            n_bg = len(self._bg_tasks)
+        title_segs = [(A_NORMAL, " "), (A_BOLD, hdr), status_seg, (A_DIM, ref)]
+        if n_bg:
+            title_segs.append((CP4 | A_BOLD, f"   {n_bg} running [b]"))
+        title_row = ContentLine(title_segs, bordered=False)
 
         st = self.log_stats
         total = st['allow'] + st['deny'] + st['defer']
@@ -2891,6 +2971,101 @@ class TUI:
                 row_item = ContentLine(visible[i])
             self._draw_item(content_top + i, row_item, cols, inner)
 
+    # ── Background tasks view ─────────────────────────────────────────────────
+
+    def _render_bgtasks(self):
+        rows, cols = self.stdscr.getmaxyx()
+        inner      = cols - 2
+        self.stdscr.erase()
+        self._draw_bgtasks_view(rows, cols, inner)
+        self._draw_controls(rows, cols, inner, self.CTRL_ROWS)
+        self._hide_cursor()
+        self._apply_cursor()
+        self.stdscr.refresh()
+        self.dirty = False
+
+    def _draw_bgtasks_view(self, rows, cols, inner):
+        A_NORMAL = curses.A_NORMAL
+        A_DIM    = curses.A_DIM
+        A_BOLD   = curses.A_BOLD
+        CP4 = curses.color_pair(4)
+
+        with self._lock:
+            tasks = list(self._bg_tasks)
+
+        ctrl_rows    = self.CTRL_ROWS
+        TASK_ROWS    = 4   # SecLine + purpose + metadata + divider
+        HEADER_ROWS  = 3   # HLine + description + divider
+
+        # ── Header ────────────────────────────────────────────────────────────
+        label = " Background Tasks "
+        self._draw_item(0, HLine(curses.ACS_ULCORNER, curses.ACS_URCORNER), cols, inner)
+        try:
+            self.stdscr.addstr(0, max(1, (cols - len(label)) // 2), label, A_BOLD)
+        except curses.error:
+            pass
+        self._draw_item(1, ContentLine(
+            [(A_DIM, "  Live Claude subprocesses running in the background.")]),
+            cols, inner)
+        self._draw_item(2, HLine(curses.ACS_LTEE, curses.ACS_RTEE), cols, inner)
+
+        content_rows = max(0, rows - ctrl_rows - HEADER_ROWS)
+        if content_rows <= 0:
+            return
+
+        if not tasks:
+            self._draw_item(HEADER_ROWS, ContentLine(
+                [(A_DIM, "  No tasks currently running.")]),
+                cols, inner)
+            self._draw_item(HEADER_ROWS + 1,
+                            HLine(curses.ACS_LLCORNER, curses.ACS_LRCORNER), cols, inner)
+            return
+
+        # ── Clamp cursor and scroll ────────────────────────────────────────────
+        n = len(tasks)
+        self.bgtasks_cursor = max(0, min(self.bgtasks_cursor, n - 1))
+        # Scroll in row-units; ensure cursor item is visible
+        cursor_row_start = self.bgtasks_cursor * TASK_ROWS
+        cursor_row_end   = cursor_row_start + TASK_ROWS
+        if cursor_row_start < self.bgtasks_scroll:
+            self.bgtasks_scroll = cursor_row_start
+        elif cursor_row_end > self.bgtasks_scroll + content_rows:
+            self.bgtasks_scroll = max(0, cursor_row_end - content_rows)
+        # Snap scroll to TASK_ROWS boundary so items don't split
+        self.bgtasks_scroll = (self.bgtasks_scroll // TASK_ROWS) * TASK_ROWS
+        max_scroll = max(0, n * TASK_ROWS - content_rows)
+        self.bgtasks_scroll = max(0, min(self.bgtasks_scroll, max_scroll))
+
+        # ── Render visible tasks ───────────────────────────────────────────────
+        total_content_rows = n * TASK_ROWS
+        all_rows: list = []
+        for i, task in enumerate(tasks):
+            is_selected = (i == self.bgtasks_cursor)
+            sec_attr    = A_BOLD | CP4 if is_selected else A_DIM
+            elapsed     = _fmt_elapsed(task["started_at"])
+            all_rows.append(SecLine(label=task["name"], attr=sec_attr))
+            all_rows.append(ContentLine([(A_DIM, f"  {task['purpose']}")], border_attr=(CP4 if is_selected else None)))
+            pid_str = str(task["pid"]) if task["pid"] is not None else "(preprocessing)"
+            all_rows.append(ContentLine(
+                [(A_DIM, f"  Started: {task['started_str']}  ·  PID: {pid_str}  ·  Elapsed: {elapsed}")],
+                border_attr=(CP4 if is_selected else None)))
+            is_last = (i == n - 1)
+            if is_last:
+                all_rows.append(HLine(curses.ACS_LLCORNER, curses.ACS_LRCORNER))
+            else:
+                all_rows.append(HLine(curses.ACS_LTEE, curses.ACS_RTEE))
+
+        scroll_start = self.bgtasks_scroll
+        scroll_end   = scroll_start + content_rows
+        visible = all_rows[scroll_start:scroll_end]
+        for i, item in enumerate(visible):
+            self._draw_item(HEADER_ROWS + i, item, cols, inner)
+
+        # Draw scroll indicators on header divider (row 2)
+        can_up   = self.bgtasks_scroll > 0
+        can_down = self.bgtasks_scroll < max_scroll
+        self._draw_scroll_indicators(2, cols, can_up, can_down)
+
     # ── Change log view ───────────────────────────────────────────────────────
 
     def _render_log(self):
@@ -3162,7 +3337,7 @@ class TUI:
         ctrl_sep  = rows - ctrl_rows
         pane_open = self.eval_open or self.shadow_open or self.rec_open
         ctrl_battr = CP8 if pane_open else None
-        box_open = pane_open or self.detail_open or self.log_open
+        box_open = pane_open or self.detail_open or self.log_open or self.bgtasks_open
         sep_lch = curses.ACS_LLCORNER if box_open else curses.ACS_HLINE
         sep_rch = curses.ACS_LRCORNER if box_open else curses.ACS_HLINE
         self._draw_item(ctrl_sep, HLine(sep_lch, sep_rch),
@@ -3222,6 +3397,21 @@ class TUI:
                 self._hide_cursor()
                 return
             self._hide_cursor()
+
+        elif self.bgtasks_open:
+            with self._lock:
+                bg_tasks = list(self._bg_tasks)
+            confirm = self._bgtasks_confirm
+            if confirm == "all":
+                n = len(bg_tasks)
+                segs = [(A_NORMAL, f"  Kill all {n} task{'s' if n != 1 else ''}?   [y] confirm   [n/esc] cancel")]
+            elif confirm is not None:
+                segs = [(A_NORMAL, f"  Kill \"{confirm['name']}\"?   [y] confirm   [n/esc] cancel")]
+            else:
+                n = len(bg_tasks)
+                kill_all_hint = "[X] kill all  " if n > 1 else ""
+                kill_hint = "[x] kill  " if n else ""
+                segs = [(A_DIM, f"  [↑↓] navigate  {kill_hint}{kill_all_hint}[esc/b] close")]
 
         elif self.eval_open:
             for i, line_segs in enumerate(self._eval_ctrl_lines(cols)):
@@ -3360,6 +3550,9 @@ class TUI:
             self._hide_cursor()
 
     def render(self):
+        if self.bgtasks_open:
+            self._render_bgtasks()
+            return
         if self.deferlog_open:
             self._render_deferlog()
             return
@@ -3482,6 +3675,15 @@ class TUI:
                 ev = self._read_event()
             if ev is None:
                 time.sleep(0.05)
+                # Live timer re-render for background tasks view
+                if self.bgtasks_open and not self.dirty:
+                    with self._lock:
+                        has_tasks = bool(self._bg_tasks)
+                    if has_tasks:
+                        now = time.monotonic()
+                        if now - self._bgtasks_timer_tick >= 1.0:
+                            self._bgtasks_timer_tick = now
+                            self.dirty = True
                 continue
 
             # Handle paste bracketing globally
@@ -3494,6 +3696,61 @@ class TUI:
 
             rows, cols    = self.stdscr.getmaxyx()
             inner         = cols - 2
+
+            # ── Background tasks view ─────────────────────────────────────────
+            if self.bgtasks_open:
+                confirm = self._bgtasks_confirm
+                if ev in (ord('n'), ord('N'), 27):
+                    if confirm is not None:
+                        self._bgtasks_confirm = None
+                        self._invalidate()
+                    else:
+                        self.bgtasks_open = False
+                        self._invalidate()
+                elif ev in (ord('y'), ord('Y')) and confirm is not None:
+                    if confirm == "all":
+                        with self._lock:
+                            tasks = list(self._bg_tasks)
+                        for t in tasks:
+                            self._cancel_proc(t['proc_attr'], t['active_attr'])
+                    else:
+                        self._cancel_proc(confirm['proc_attr'], confirm['active_attr'])
+                    self._bgtasks_confirm = None
+                    self._invalidate()
+                elif ev in (ord('b'), ord('B')) and confirm is None:
+                    self.bgtasks_open = False
+                    self._invalidate()
+                elif confirm is None:
+                    if ev in (curses.KEY_UP, ord('k')):
+                        self.bgtasks_cursor = max(0, self.bgtasks_cursor - 1)
+                        self.dirty = True
+                    elif ev in (curses.KEY_DOWN, ord('j')):
+                        with self._lock:
+                            n = len(self._bg_tasks)
+                        self.bgtasks_cursor = min(max(0, n - 1), self.bgtasks_cursor + 1)
+                        self.dirty = True
+                    elif ev in (curses.KEY_PPAGE,):
+                        self.bgtasks_cursor = max(0, self.bgtasks_cursor - max(1, (rows - 6) // 4))
+                        self.dirty = True
+                    elif ev in (curses.KEY_NPAGE,):
+                        with self._lock:
+                            n = len(self._bg_tasks)
+                        self.bgtasks_cursor = min(max(0, n - 1),
+                                                  self.bgtasks_cursor + max(1, (rows - 6) // 4))
+                        self.dirty = True
+                    elif ev == ord('x'):
+                        with self._lock:
+                            tasks = list(self._bg_tasks)
+                        if 0 <= self.bgtasks_cursor < len(tasks):
+                            self._bgtasks_confirm = dict(tasks[self.bgtasks_cursor])
+                            self._invalidate()
+                    elif ev == ord('X'):
+                        with self._lock:
+                            n = len(self._bg_tasks)
+                        if n:
+                            self._bgtasks_confirm = "all"
+                            self._invalidate()
+                continue
 
             # ── Change log view ───────────────────────────────────────────────
             if self.log_open:
@@ -3917,6 +4174,12 @@ class TUI:
                     else:
                         self.rec_open = False
                     self._invalidate()
+            elif ev in (ord('b'), ord('B')):
+                self.bgtasks_open   = True
+                self.bgtasks_cursor = 0
+                self.bgtasks_scroll = 0
+                self._bgtasks_confirm = None
+                self._invalidate()
             elif ev in (ord('r'), ord('R')):
                 self.refresh()
             elif ev == 18:  # Ctrl+R
