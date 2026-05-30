@@ -13,5 +13,5 @@ __pycache__/
 # Runtime cache (TUI state, recommendations, shadow analysis)
 .claude/cache/
 
-# Local-machine-specific Claude settings (may contain absolute paths)
-.claude/settings.local.json
+.claude/unfence.json
+**/**.local.**

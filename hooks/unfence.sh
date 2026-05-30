@@ -20,7 +20,8 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RULES_DIR="${UNFENCE_RULES_DIR:-$SCRIPT_DIR/../rules}"
 LOG_FILE="$SCRIPT_DIR/../logs/unfence.log"
-DISABLED_FLAG="${UNFENCE_CACHE_DIR:-$SCRIPT_DIR/../.claude/cache}/.disabled"
+CACHE_DIR="${UNFENCE_CACHE_DIR:-$SCRIPT_DIR/../.claude/cache}"
+DISABLED_FLAG="$CACHE_DIR/.disabled"
 SESSION_ID="${CLAUDE_SESSION_ID:-${PPID}}"
 MAX_RECURSE=10
 
@@ -591,7 +592,7 @@ SESSION_CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
 # project root (handles CWD drift when the agent navigates away during the
 # session). Cache the result in /tmp to avoid a find(1) on every invocation.
 # Falls back to SESSION_CWD directly when no transcript is found (e.g. tests).
-_cache_file="/tmp/unfence-session-${SESSION_ID}"
+_cache_file="$CACHE_DIR/session-${SESSION_ID}"
 if [[ -f "$_cache_file" ]]; then
   _root=$(cat "$_cache_file")
 else
@@ -599,7 +600,10 @@ else
   _root=""
   if [[ -n "$_transcript" ]]; then
     _root=$(grep -m 1 '"cwd":' "$_transcript" | jq -r '.cwd // empty' 2>/dev/null)
-    [[ -n "$_root" ]] && printf '%s' "$_root" > "$_cache_file"
+    if [[ -n "$_root" ]]; then
+      mkdir -p "$CACHE_DIR"
+      printf '%s' "$_root" > "$_cache_file"
+    fi
   fi
   unset _transcript
 fi
