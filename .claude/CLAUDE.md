@@ -257,6 +257,34 @@ When a user requests a modification or addition of a rule, **first evaluate whet
 
 **Rule:** When adding or editing any feature that spawns a Claude subprocess, always ensure the log path is meaningful and discoverable. Never use `stderr=subprocess.DEVNULL` or discard stdout without writing it to a log first. When debugging a failure that a user reports via screenshot, check the corresponding log file first — it contains the full Claude transcript including any error messages or JSON output.
 
+## Claude Subprocess Invocation — Never Use `--bare`
+
+`summarize_rule` (and any other function that shells out to `claude` for a result) must use the same invocation pattern as `_spawn_claude_task` — **not** `claude --bare`. `--bare` requires interactive `/login` and ignores the env-var auth (`ANTHROPIC_BASE_URL`, `ANTHROPIC_CUSTOM_HEADERS`) that the TUI session uses. Use:
+
+```
+claude --model <model-id> --setting-sources user,project,local --dangerously-skip-permissions --output-format text -p <prompt>
+```
+
+Use `os.environ.get("ANTHROPIC_DEFAULT_HAIKU_MODEL", "claude-haiku-4-5-20251001")` to resolve the model ID rather than the alias `haiku` (which `--bare` understood but the non-bare invocation does not).
+
+## Claude Subprocess Output Validation
+
+**Always validate that subprocess output is the expected format before writing it to a cache file.** When `summarize_rule` receives a non-JSON response (e.g. an auth error string), writing it to the cache file corrupts that file permanently. Two cascading failures result:
+
+1. **`load_cache` fails silently**, returning `None`, so the rule shows no description.
+2. **`is_stale` returns `False`** (the corrupt cache is fresh), so pressing `[x]` to regenerate enqueues nothing — `_trigger_stale` sees no stale rules and the UI silently ignores the keypress.
+
+**Rule:** Before writing any output to a rule's cache file, parse it with `json.loads()`. If parsing fails, log the error and return without writing — keeping the cache absent so `is_stale` returns `True` and the next retry works.
+
+**UI rule:** A failed summarization must be surfaced visibly. The detail view must show "Summarization failed." (red/bold) with a log-file hint and "Press [x] to retry." — never silently revert to the generic "no description" prompt. Track failed rules in a `self.failed` set; clear the entry on `[x]` or on successful summarization.
+
+**Proof-of-fix standard:** A fix to this class of bug must be verified by a TUI test (in `tui-tests/`) using a stub `claude` binary (on PATH, in the fixture dir) that returns non-JSON instantly. The test must assert:
+- After a failed startup summarization, the detail view shows "Summarization failed." — not "no description".
+- Pressing `[x]` shows "Summarizing, please wait…" (triggered), then "Summarization failed." again after the retry also fails.
+- The stub must `sleep 0.5` before outputting so the "Summarizing" state is observable under parallel test load.
+
+See `tui-tests/test-regenerate-summary.sh` for the canonical implementation.
+
 ## Claude Subprocess and Protected Paths
 
 `_spawn_claude_task` spawns Claude with `--dangerously-skip-permissions` to bypass interactive permission prompts. However, Claude Code's **sensitive-file guard** operates independently and blocks writes to `~/.claude/**` regardless of that flag.

@@ -93,9 +93,13 @@ def summarize_rule(rule: Path):
         "If the rule does NOT read $PROJECT_CONFIG, set this key to null.\n\n"
         + content
     )
+    haiku_model = os.environ.get("ANTHROPIC_DEFAULT_HAIKU_MODEL", "claude-haiku-4-5-20251001")
     result = subprocess.run(
-        ["claude", "--bare", "-p", prompt, "--model", "haiku",
-         "--output-format", "text"],
+        ["claude", "--model", haiku_model,
+         "--setting-sources", "user,project,local",
+         "--dangerously-skip-permissions",
+         "--output-format", "text",
+         "-p", prompt],
         capture_output=True, text=True,
     )
     log_path = CACHE_DIR / f"summarize-{rule.name}.log"
@@ -108,6 +112,12 @@ def summarize_rule(rule: Path):
         if not line.startswith("```")
     ).strip()
     if output:
+        try:
+            json.loads(output)
+        except json.JSONDecodeError:
+            with log_path.open("a") as f:
+                f.write(f"\n[ERROR] Output is not valid JSON — cache not written\n")
+            return
         (CACHE_DIR / rule.name).write_text(output)
 
 def relative_time(mtime: float) -> str:
@@ -1047,6 +1057,7 @@ class TUI:
         self.synced       = {}
         self.config_aware = {}
         self.active       = set()
+        self.failed       = set()   # rule names whose last summarization attempt failed
         self.last_refresh = ""
 
         self.shadows          = {}
@@ -1281,6 +1292,9 @@ class TUI:
         with self._lock:
             if data:
                 self.caches[rule.name] = data
+                self.failed.discard(rule.name)
+            else:
+                self.failed.add(rule.name)
             self.active.discard(rule.name)
         self._invalidate()
 
@@ -2784,6 +2798,7 @@ class TUI:
             caches            = dict(self.caches)
             config_aware      = dict(self.config_aware)
             active            = set(self.active)
+            failed            = set(self.failed)
             per_rule          = self.log_stats.get("per_rule", {})
             detail_modifying  = self.detail_modifying
             detail_mod_result = self.detail_modify_result
@@ -2795,6 +2810,7 @@ class TUI:
         name         = rule.name
         n            = idx + 1
         summarizing  = name in active
+        summ_failed  = name in failed and not summarizing
 
         cache   = caches.get(name) or {}
         title   = cache.get("title") or name
@@ -2848,6 +2864,11 @@ class TUI:
             lines.append([(CP4 | A_BOLD, "  Modifying, please wait…")])
         elif summarizing:
             lines.append([(CP4 | A_BOLD, "  Summarizing, please wait…")])
+        elif summ_failed:
+            lines.append([(CP2 | A_BOLD, "  Summarization failed.")])
+            log_name = f"summarize-{name}.log"
+            lines.append([(A_DIM, f"  Check {log_name} in the cache dir for details.")])
+            lines.append([(A_DIM,  "  Press [x] to retry.")])
         elif desc:
             for i, para in enumerate(desc.split("\n\n")):
                 if i:
@@ -2864,7 +2885,7 @@ class TUI:
             lines.append([(A_DIM, "  (no description — press [x] to generate)")])
 
         # ── Recent commands + change log ─────────────────────────────────────────
-        if not detail_modifying and not summarizing:
+        if not detail_modifying and not summarizing and not summ_failed:
             def _sec(label: str) -> SecLine:
                 return SecLine(label, A_DIM | A_BOLD)
 
@@ -3915,6 +3936,8 @@ class TUI:
                     if self.detail_rule_idx < len(rules):
                         rule = rules[self.detail_rule_idx]
                         (CACHE_DIR / rule.name).unlink(missing_ok=True)
+                        with self._lock:
+                            self.failed.discard(rule.name)
                         self._trigger_stale()
                 elif ev in (ord('m'), ord('M')):
                     self.detail_modify_mode   = True
