@@ -4117,6 +4117,8 @@ class TUI:
                 elif ev in (ord('a'), ord('A')):
                     if (self.eval_result or {}).get('verdict') == 'defer':
                         self._add_allow_rule(self.eval_input.strip())
+                        self.eval_open = False
+                        self._clear_eval_input()
                         self._invalidate()
                 elif ev == 27:  # ESC: close panel
                     self.eval_open = False

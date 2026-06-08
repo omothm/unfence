@@ -7,6 +7,7 @@
 #  3. Esc closes the pane and returns to the main list
 #  4. Re-opening with e clears the previous input (fresh state)
 #  5. Enter submits the command; a verdict line appears in the result
+#  6. [a] from eval result mode closes the pane (background task continues)
 
 source "$(dirname "$0")/helper.sh"
 
@@ -49,6 +50,16 @@ run() {
     else
         tui_fail "Enter: no verdict visible after eval (screen: $(echo "$screen" | tail -5))"
     fi
+
+    # 6. [a] in eval result mode closes the pane and returns to main list.
+    #    All fixture rules echo defer, so any command gets a defer verdict,
+    #    which makes [a] active. The background task continues in [b].
+    tui_send e ""; tui_wait_for "Evaluate"
+    tui_send "someunknowncmd" ""
+    tui_send Enter ""; tui_wait_for "allow\|deny\|defer" 60
+    tui_send a ""; tui_wait_for_ctrl "navigate"
+    tui_assert_not_screen "[a]: eval pane closed" "Evaluate"
+    tui_assert_screen     "[a]: main list visible" "navigate"
 
     tui_stop
 }
