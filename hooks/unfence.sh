@@ -625,33 +625,17 @@ RAW_COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
 
 SESSION_CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
 
-# Load PROJECT_CONFIG: look up the session's transcript to find the original
-# project root (handles CWD drift when the agent navigates away during the
-# session). Cache the result in /tmp to avoid a find(1) on every invocation.
-# Falls back to SESSION_CWD directly when no transcript is found (e.g. tests).
-_cache_file="$CACHE_DIR/session-${SESSION_ID}"
-if [[ -f "$_cache_file" ]]; then
-  _root=$(cat "$_cache_file")
-else
-  _transcript=$(find ~/.claude/projects -maxdepth 2 -name "${SESSION_ID}.jsonl" 2>/dev/null | head -1)
-  _root=""
-  if [[ -n "$_transcript" ]]; then
-    _root=$(grep -m 1 '"cwd":' "$_transcript" | jq -r '.cwd // empty' 2>/dev/null)
-    if [[ -n "$_root" ]]; then
-      mkdir -p "$CACHE_DIR"
-      printf '%s' "$_root" > "$_cache_file"
-    fi
-  fi
-  unset _transcript
-fi
+# Load PROJECT_CONFIG from the session's initial project directory.
+# CLAUDE_PROJECT_DIR is set by Claude Code in the hook environment and always
+# points to the directory where the session started, regardless of any cd
+# commands the agent may have run. Fall back to SESSION_CWD for tests/eval
+# where CLAUDE_PROJECT_DIR is not set.
+_root="${CLAUDE_PROJECT_DIR:-$SESSION_CWD}"
 if [[ -n "$_root" && -f "$_root/.claude/unfence.json" ]]; then
   PROJECT_CONFIG=$(cat "$_root/.claude/unfence.json")
-  log "CONFIG loaded from transcript root: $_root"
-elif [[ -n "$SESSION_CWD" && -f "$SESSION_CWD/.claude/unfence.json" ]]; then
-  PROJECT_CONFIG=$(cat "$SESSION_CWD/.claude/unfence.json")
-  log "CONFIG loaded from $SESSION_CWD/.claude/unfence.json"
+  log "CONFIG loaded from $_root/.claude/unfence.json"
 fi
-unset _cache_file _root
+unset _root
 
 if [[ -z "$RAW_COMMAND" ]]; then
   log "SKIP  empty command"

@@ -144,13 +144,12 @@ run_test_with_cwd() {
 }
 export -f run_test_with_cwd
 
-# run_test_with_transcript "desc" "cmd" "expected" '{"key":...}' "fake-session-id"
-# Creates a real .claude/unfence.json and a fake transcript JSONL under
-# ~/.claude/projects/, then runs the engine with CLAUDE_SESSION_ID set to the
-# fake session ID. Verifies that the engine resolves PROJECT_CONFIG from the
-# transcript-recorded project root rather than from the hook's cwd field.
-run_test_with_transcript() {
-  local description="$1" command="$2" expected="$3" config_json="$4" session_id="${5:-unfence-test-$$}"
+# run_test_with_project_dir "desc" "cmd" "expected" '{"key":...}'
+# Like run_test_with_config but simulates CWD drift: the hook's cwd field is
+# set to /tmp while CLAUDE_PROJECT_DIR points to the real project dir containing
+# the config. Verifies that the engine uses CLAUDE_PROJECT_DIR, not cwd.
+run_test_with_project_dir() {
+  local description="$1" command="$2" expected="$3" config_json="$4"
   local seq=$(( ++_SEQ ))
   (( TOTAL++ ))
 
@@ -161,22 +160,16 @@ run_test_with_transcript() {
 
   local result_file="$_TMPDIR/$seq"
   (
-    local proj_dir transcript_dir transcript_file json output actual
-    # Create the "project" dir with its config
+    local proj_dir json output actual
     proj_dir=$(mktemp -d)
     mkdir -p "$proj_dir/.claude"
     printf '%s' "$config_json" > "$proj_dir/.claude/unfence.json"
 
-    # Create a minimal transcript entry with the project root cwd
-    transcript_dir=$(mktemp -d "$HOME/.claude/projects/.unfence-test.XXXXXX")
-    transcript_file="$transcript_dir/${session_id}.jsonl"
-    printf '{"type":"message","cwd":"%s","sessionId":"%s"}\n' "$proj_dir" "$session_id" > "$transcript_file"
-
-    # Engine sees cwd=/tmp (drifted), but CLAUDE_SESSION_ID points to transcript
+    # Engine sees cwd=/tmp (drifted), but CLAUDE_PROJECT_DIR points to config
     json=$(jq -n --arg cmd "$command" --arg cwd "/tmp" \
       '{"tool_input":{"command":$cmd},"cwd":$cwd}')
-    output=$(CLAUDE_SESSION_ID="$session_id" bash "$ENGINE" <<< "$json" 2>/dev/null)
-    rm -rf "$proj_dir" "$transcript_dir" "/tmp/unfence-session-${session_id}"
+    output=$(CLAUDE_PROJECT_DIR="$proj_dir" bash "$ENGINE" <<< "$json" 2>/dev/null)
+    rm -rf "$proj_dir"
 
     actual=$(jq -r '(.hookSpecificOutput.ruleVerdict // .hookSpecificOutput.permissionDecision) // empty' <<< "$output" 2>/dev/null)
     [[ -z "$actual" ]] && actual="defer"
@@ -189,7 +182,7 @@ run_test_with_transcript() {
   ) &
   (( _ACTIVE++ ))
 }
-export -f run_test_with_transcript
+export -f run_test_with_project_dir
 
 # run_test_deny_reason "desc" "cmd" "expected_reason_substr"
 # Asserts verdict=deny AND permissionDecisionReason contains the given substring.
