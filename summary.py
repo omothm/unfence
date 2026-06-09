@@ -4018,12 +4018,16 @@ class TUI:
 
             # ── Eval allow result (dismiss on any key) ────────────────────────
             if self.eval_allow_result is not None:
-                self.eval_allow_result = None
-                self._invalidate()
-                continue
+                if self.eval_open:
+                    self.eval_allow_result = None
+                    self._invalidate()
+                    continue
+                else:
+                    # Pane is closed; clear silently and fall through to normal key handling.
+                    self.eval_allow_result = None
 
             # ── Eval allowing (Claude running in background) ───────────────────
-            if self.eval_allowing:
+            if self.eval_allowing and self.eval_open:
                 if ev == 27:
                     self._cancel_proc('_eval_allow_proc', 'eval_allowing')
                 continue
