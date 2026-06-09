@@ -3189,10 +3189,13 @@ class TUI:
                 continue
 
             if in_fence:
-                # Fence content: 4-space indent, cyan, word-wrapped
-                segs = [(CP4, raw)]
-                for wrap_segs in wrap_token_line(segs, max(1, wrap_w - 2)) if raw.strip() else [[]]:
-                    items.append([(A_DIM, "    ")] + wrap_segs)
+                # Fence content: 4-space indent, cyan, word-wrapped.
+                # wrap_token_line only splits A_NORMAL segments, so pass the text
+                # as A_NORMAL for wrapping, then re-apply CP4 to every result token.
+                norm_segs = [(A_NORMAL, raw)]
+                wrapped_lines = wrap_token_line(norm_segs, max(1, wrap_w - 2)) if raw.strip() else [[]]
+                for wrap_segs in wrapped_lines:
+                    items.append([(A_DIM, "    ")] + [(CP4, t) for _, t in wrap_segs])
                 continue
 
             # Horizontal rule: --- / *** / ___ (3+ chars, optional surrounding spaces)

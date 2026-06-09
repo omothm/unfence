@@ -274,58 +274,11 @@ tui_capture() { tmux capture-pane -t "$SESSION" -p; }
 #   1: x[D]  30d: [B+grn]22[D] allowed   [B+red]0[D] denied   ·   Last modified: 4d ago   x
 #  16: x[B+D]  qq Recent Commands qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqx
 tui_capture_attr() {
-    tmux capture-pane -t "$SESSION" -e -p | python3 - <<'PYEOF'
-import re, sys
-
-COLORS = {0:'blk',1:'red',2:'grn',3:'yel',4:'blu',5:'mag',6:'cyn',7:'wht'}
-
-def parse_state(codes, state):
-    i = 0
-    while i < len(codes):
-        c = codes[i]
-        if c == 0:    state.clear()
-        elif c == 1:  state['bold'] = True
-        elif c == 2:  state['dim']  = True
-        elif c == 22: state.pop('bold', None); state.pop('dim', None)
-        elif 30 <= c <= 37: state['fg'] = COLORS[c - 30]
-        elif c == 39: state.pop('fg', None)
-        elif c == 38 and i+2 < len(codes) and codes[i+1] == 5:
-            state['fg'] = f'c{codes[i+2]}'
-            i += 2
-        i += 1
-
-def fmt(state):
-    if not state: return ''
-    parts = []
-    if state.get('bold'): parts.append('B')
-    if state.get('dim'):  parts.append('D')
-    if 'fg' in state:     parts.append(state['fg'])
-    return '+'.join(parts)
-
-SGR_RE = re.compile(r'\x1b\[([0-9;]*)m')
-ESC_RE = re.compile(r'\x1b[\x20-\x2f]*[\x40-\x7e]|\x1b\[[^a-zA-Z]*[a-zA-Z]')
-
-for lineno, line in enumerate(sys.stdin.read().split('\n')):
-    pos = 0; state = {}; out = []
-    while pos < len(line):
-        ch = line[pos]
-        if ch in '\x0e\x0f': pos += 1; continue
-        m = SGR_RE.match(line, pos)
-        if m:
-            codes = [int(x) if x else 0 for x in m.group(1).split(';')]
-            parse_state(codes, state); pos = m.end(); continue
-        m = ESC_RE.match(line, pos)
-        if m: pos = m.end(); continue
-        out.append((fmt(state), ch)); pos += 1
-    result = ""; prev_tag = None; run = ""
-    for tag, ch in out:
-        if tag == prev_tag: run += ch
-        else:
-            if run: result += (f'[{prev_tag}]{run}' if prev_tag else run)
-            prev_tag = tag; run = ch
-    if run: result += (f'[{prev_tag}]{run}' if prev_tag else run)
-    print(f"{lineno:2}: {result.rstrip()}")
-PYEOF
+    # Use a .py file — avoids the heredoc stdin conflict that silently discards
+    # the piped tmux output (<<'PYEOF' overrides stdin, so python3 - reads the
+    # script but gets nothing from the pipe).
+    local _attr_script; _attr_script="$(dirname "${BASH_SOURCE[0]}")/attr_parse.py"
+    tmux capture-pane -t "$SESSION" -e -p | python3 "$_attr_script"
 }
 
 # tui_ctrl_line — print the bottom control/status line(s)
@@ -433,8 +386,10 @@ tui_assert_not_screen() {
 # Example: tui_assert_attr "allowed count is bold+green" "B+grn.*allowed"
 tui_assert_attr() {
     local label="$1" pattern="$2"
-    if tui_capture_attr | grep -qP "$pattern" 2>/dev/null \
-        || tui_capture_attr | grep -q "$pattern"; then
+    local _attr
+    _attr=$(tui_capture_attr)
+    if echo "$_attr" | grep -qP "$pattern" 2>/dev/null \
+        || echo "$_attr" | grep -q "$pattern"; then
         tui_pass "$label"
     else
         tui_fail "$label (attr pattern '$pattern' not found)"
