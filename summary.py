@@ -3159,11 +3159,34 @@ class TUI:
         self.stdscr.refresh()
         self.dirty = False
 
-    def _draw_taskoutput_view(self, rows, cols, inner, ctrl_rows):
-        A_DIM   = curses.A_DIM
-        A_BOLD  = curses.A_BOLD
+    def _taskoutput_items(self, inner: int) -> list:
+        """Build display items (SecLine | list-of-segs) for the task output overlay.
+        Headers (# / ##) become SecLines; other lines are parsed for markdown and
+        word-wrapped to fit inner width."""
+        A_DIM    = curses.A_DIM
+        A_BOLD   = curses.A_BOLD
         A_NORMAL = curses.A_NORMAL
+        CP1 = curses.color_pair(1)
         CP4 = curses.color_pair(4)
+
+        wrap_w = max(1, inner - 4)  # "  " indent + 2 spare
+        items = []
+        for raw in self._taskoutput_lines:
+            # Markdown headings: # Heading or ## Heading
+            m = re.match(r'^(#{1,2})\s+(.*)', raw)
+            if m:
+                items.append(SecLine(label=m.group(2).strip(), attr=A_BOLD))
+                continue
+            # Parse bold/code, then word-wrap the resulting segments
+            segs = parse_md(raw, A_NORMAL, CP1 | A_BOLD, CP4)
+            for wrap_segs in wrap_token_line(segs, wrap_w) if raw.strip() else [[]]:
+                # indent: dim "  " prefix on every wrapped line
+                items.append([(A_DIM, "  ")] + wrap_segs)
+        return items
+
+    def _draw_taskoutput_view(self, rows, cols, inner, ctrl_rows):
+        A_DIM    = curses.A_DIM
+        A_BOLD   = curses.A_BOLD
 
         HEADER_ROWS = 3
         content_rows = max(0, rows - ctrl_rows - HEADER_ROWS)
@@ -3181,27 +3204,28 @@ class TUI:
         if content_rows <= 0:
             return
 
-        lines = self._taskoutput_lines
-        n = len(lines)
-
-        # Clamp scroll
-        max_scroll = max(0, n - content_rows)
-        self.taskoutput_scroll = max(0, min(self.taskoutput_scroll, max_scroll))
-
-        if not lines:
+        if not self._taskoutput_lines:
             self._draw_item(HEADER_ROWS, ContentLine([(A_DIM, "  (no output)")]), cols, inner)
             self._draw_item(HEADER_ROWS + 1, HLine(curses.ACS_LLCORNER, curses.ACS_LRCORNER),
                             cols, inner)
             return
 
-        visible_lines = lines[self.taskoutput_scroll: self.taskoutput_scroll + content_rows]
-        for i, line in enumerate(visible_lines):
-            self._draw_item(HEADER_ROWS + i,
-                            ContentLine([(A_DIM, "  ")] + parse_md(line, A_NORMAL, A_BOLD, CP4)),
-                            cols, inner)
+        all_items = self._taskoutput_items(inner)
+        n = len(all_items)
+
+        # Clamp scroll (sentinel len(lines) set on open → lands at bottom)
+        max_scroll = max(0, n - content_rows)
+        self.taskoutput_scroll = max(0, min(self.taskoutput_scroll, max_scroll))
+
+        visible = all_items[self.taskoutput_scroll: self.taskoutput_scroll + content_rows]
+        for i, item in enumerate(visible):
+            if isinstance(item, SecLine):
+                self._draw_item(HEADER_ROWS + i, item, cols, inner)
+            else:
+                self._draw_item(HEADER_ROWS + i, ContentLine(item), cols, inner)
 
         # Bottom border
-        bottom_row = HEADER_ROWS + min(len(visible_lines), content_rows)
+        bottom_row = HEADER_ROWS + min(len(visible), content_rows)
         if bottom_row < rows - ctrl_rows:
             self._draw_item(bottom_row, HLine(curses.ACS_LLCORNER, curses.ACS_LRCORNER),
                             cols, inner)
@@ -3871,7 +3895,7 @@ class TUI:
                     self.taskoutput_scroll = 0
                     self.dirty = True
                 elif ev == curses.KEY_END:
-                    self.taskoutput_scroll = max(0, len(self._taskoutput_lines) - 1)
+                    self.taskoutput_scroll = len(self._taskoutput_lines) * 4  # sentinel; clamped on render
                     self.dirty = True
                 continue
 
