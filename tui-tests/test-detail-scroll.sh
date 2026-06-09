@@ -58,10 +58,14 @@ run() {
         tui_pass "scroll/up: ↑ indicator gone after returning to top"
     fi
 
-    # 4. → (next rule) resets scroll: scroll down first, then switch rule
+    # 4. → (next rule) resets scroll: scroll down first, then switch rule.
+    # Wait for the new rule's title to appear (confirms the switch rendered),
+    # then verify the ↑ indicator is gone (scroll was reset to 0).
     tui_send Down ""; sleep 0.1
     tui_send Down ""; sleep 0.1
-    tui_send Right ""; tui_wait_for_not "↑"   # navigate to next rule — scroll resets to 0
+    tui_send Right ""
+    tui_wait_for "Test Rule 2" 60 \
+        || { tui_fail "scroll/rule-change: rule switch did not render within 6s"; tui_stop; return; }
     if has_up_indicator; then
         tui_fail "scroll/rule-change: ↑ indicator persisted after ← / → rule switch"
     else

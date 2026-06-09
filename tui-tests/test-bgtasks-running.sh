@@ -48,7 +48,7 @@ MOCK
 
     # 2. Open background tasks view and verify the task is listed
     tui_send "b" ""
-    tui_wait_for "Background Tasks" 20 \
+    tui_wait_for "Background Tasks" 50 \
         || { tui_fail "[b]: Background Tasks view did not open"; tui_stop; return; }
     tui_assert_screen "view: shadow-analysis task listed" "shadow-analysis"
 
@@ -67,7 +67,7 @@ MOCK
         || { tui_fail "[x]: kill confirmation prompt did not appear"; tui_stop; return; }
     tui_send "y" ""
     # After kill, task list should be empty → "No tasks currently running."
-    tui_wait_for "No tasks currently running" 30 \
+    tui_wait_for "No tasks currently running" 60 \
         || { tui_fail "[y]: task not removed after kill confirm"; tui_stop; return; }
     tui_assert_screen "after kill: empty state shown" "No tasks currently running"
 

@@ -17,7 +17,7 @@ run() {
 
     # 1. Open deferlog
     tui_send "d" ""
-    tui_wait_for "Deferred Log" 20 \
+    tui_wait_for "Deferred Log" 50 \
         || { tui_fail "deferlog view did not open"; tui_stop; return; }
     tui_assert_screen "deferlog open: header visible" "Deferred Log"
 

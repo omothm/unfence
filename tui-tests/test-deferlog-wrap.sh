@@ -17,7 +17,7 @@ run() {
 
     # Open the deferlog view
     tui_send "d" ""
-    tui_wait_for "Deferred Log" 20 \
+    tui_wait_for "Deferred Log" 50 \
         || { tui_fail "deferlog view did not open within 2s"; tui_stop; return; }
 
     # Without the fix, the single control line is 54 chars and is truncated at

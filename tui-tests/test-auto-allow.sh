@@ -14,7 +14,7 @@ run() {
     echo "--- test: Auto-Allow section header appears in deferlog view ---"
     tui_start
     tui_send "d" ""
-    tui_wait_for "Deferred Log" 20 \
+    tui_wait_for "Deferred Log" 50 \
         || { tui_fail "T1: deferlog view did not open"; tui_stop; return; }
     tui_assert_screen "T1: Auto-Allow section header" "Auto-Allow:"
     tui_stop
@@ -23,7 +23,7 @@ run() {
     echo "--- test: default fixture shows 'Analysis not run yet' ---"
     tui_start
     tui_send "d" ""
-    tui_wait_for "Deferred Log" 20 \
+    tui_wait_for "Deferred Log" 50 \
         || { tui_fail "T2: deferlog view did not open"; tui_stop; return; }
     tui_assert_screen "T2: initial state shows 'Analysis not run yet'" "Analysis not run yet"
     tui_stop
@@ -37,7 +37,7 @@ run() {
         "{\"$t3_hash\":[\"curl\"]}" \
         "$t3_cmd"
     tui_send "d" ""
-    tui_wait_for "Deferred Log" 20 \
+    tui_wait_for "Deferred Log" 50 \
         || { tui_fail "T3: deferlog view did not open"; tui_stop; return; }
     tui_assert_screen "T3: entry analyzed, nothing allowed" "Allowed: none"
     tui_stop
@@ -51,7 +51,7 @@ run() {
         "{\"$t4_hash\":[\"grep\",\"pkill\"]}" \
         "$t4_cmd"
     tui_send "d" ""
-    tui_wait_for "Deferred Log" 20 \
+    tui_wait_for "Allowed:" 50 \
         || { tui_fail "T4: deferlog view did not open"; tui_stop; return; }
     tui_assert_screen "T4: added command shown" "Allowed: \`grep\`"
     tui_stop

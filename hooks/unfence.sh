@@ -45,6 +45,32 @@ log() {
     >> "$LOG_FILE" 2>/dev/null
 }
 
+# Drop log lines older than 30 days. Reads only the first line to decide whether
+# rotation is needed (fast path); rewrites the file only when the first entry is
+# outside the window.
+_rotate_log() {
+  [[ -f "$LOG_FILE" ]] || return 0
+  local first_line cutoff_date first_date
+  first_line=$(head -1 "$LOG_FILE")
+  # Extract the date portion: "[2026-03-26 ..." → "2026-03-26"
+  first_date="${first_line:1:10}"
+  [[ "$first_date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || return 0
+  cutoff_date=$(date -v-30d '+%Y-%m-%d' 2>/dev/null \
+    || date -d '30 days ago' '+%Y-%m-%d' 2>/dev/null) || return 0
+  [[ "$first_date" < "$cutoff_date" ]] || return 0
+  # First line is older than 30 days — rewrite keeping only lines within window.
+  local tmp
+  tmp=$(mktemp "$LOG_FILE.XXXXXX") || return 0
+  # awk: once we've seen a line with a date >= cutoff, keep it and everything after.
+  awk -v cutoff="$cutoff_date" '
+    !printing && /^\[([0-9]{4}-[0-9]{2}-[0-9]{2})/ {
+      d = substr($0, 2, 10)
+      if (d >= cutoff) printing = 1
+    }
+    printing { print }
+  ' "$LOG_FILE" > "$tmp" && mv "$tmp" "$LOG_FILE" || rm -f "$tmp"
+}
+
 # ── User-defined function registry ────────────────────────────────────────────
 
 # Return the worse of two verdicts: deny > ask > defer > allow.
@@ -539,6 +565,9 @@ if [[ -d "$RULES_DIR" ]]; then
   done < <(find "$RULES_DIR" -maxdepth 1 -name "*.sh" ! -name "*.test.sh" -print0 \
            | sort -z)
 fi
+
+# Rotate log on every normal invocation (skipped in EVAL_MODE which has no log).
+[[ -z "$EVAL_MODE" ]] && _rotate_log
 
 # ── Disabled check ────────────────────────────────────────────────────────────
 if [[ -f "$DISABLED_FLAG" ]]; then
