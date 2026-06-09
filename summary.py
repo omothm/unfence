@@ -3189,8 +3189,10 @@ class TUI:
                 continue
 
             if in_fence:
-                # Verbatim code content: 4-space indent, cyan, no markdown
-                items.append([(A_DIM, "    "), (CP4, raw)])
+                # Fence content: 4-space indent, cyan, word-wrapped
+                segs = [(CP4, raw)]
+                for wrap_segs in wrap_token_line(segs, max(1, wrap_w - 2)) if raw.strip() else [[]]:
+                    items.append([(A_DIM, "    ")] + wrap_segs)
                 continue
 
             # Horizontal rule: --- / *** / ___ (3+ chars, optional surrounding spaces)
@@ -3198,12 +3200,15 @@ class TUI:
                 items.append(HLine(curses.ACS_LTEE, curses.ACS_RTEE))
                 continue
 
-            # Headings: any number of # signs — green bold, all levels same
+            # Headings: any number of # signs — hashes dim, text green bold
             m = re.match(r'^(#+)\s+(.*)', raw)
             if m:
-                text = m.group(2).strip()
-                for wrap_segs in wrap_token_line([(CP6 | A_BOLD, text)], wrap_w) or [[]]:
-                    items.append([(A_DIM, "  ")] + wrap_segs)
+                hashes = m.group(1) + " "
+                text   = m.group(2).strip()
+                prefix = [(A_DIM, "  "), (A_DIM, hashes)]
+                for wrap_segs in wrap_token_line([(CP6 | A_BOLD, text)], max(1, wrap_w - len(hashes))) or [[]]:
+                    items.append(prefix + wrap_segs)
+                    prefix = [(A_DIM, "  " + " " * len(hashes))]  # continuation indent
                 continue
 
             # Normal line: parse bold/code spans, then word-wrap
