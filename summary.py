@@ -3160,28 +3160,57 @@ class TUI:
         self.dirty = False
 
     def _taskoutput_items(self, inner: int) -> list:
-        """Build display items (SecLine | list-of-segs) for the task output overlay.
-        Headers (# / ##) become SecLines; other lines are parsed for markdown and
-        word-wrapped to fit inner width."""
+        """Build display items (HLine | list-of-segs) for the task output overlay.
+
+        Markdown elements handled:
+          # / ## / ###…  → green-bold heading line (all levels same style)
+          ---            → dim HLine separator
+          ```…```        → code fence: dim HLine boundary + verbatim cyan content
+          **bold**       → yellow bold (CP1|A_BOLD)
+          `code`         → cyan (CP4)
+        All other lines are word-wrapped to fit inner width.
+        """
         A_DIM    = curses.A_DIM
         A_BOLD   = curses.A_BOLD
         A_NORMAL = curses.A_NORMAL
-        CP1 = curses.color_pair(1)
-        CP4 = curses.color_pair(4)
+        CP1 = curses.color_pair(1)   # yellow  — inline **bold**
+        CP4 = curses.color_pair(4)   # cyan    — inline `code` + fence content
+        CP6 = curses.color_pair(6)   # green   — headings
 
         wrap_w = max(1, inner - 4)  # "  " indent + 2 spare
         items = []
+        in_fence = False
+
         for raw in self._taskoutput_lines:
-            # Markdown headings: # Heading or ## Heading
-            m = re.match(r'^(#{1,2})\s+(.*)', raw)
-            if m:
-                items.append(SecLine(label=m.group(2).strip(), attr=A_BOLD))
+            # Code fence boundary: ``` (optionally followed by a language hint)
+            if re.match(r'^```', raw):
+                in_fence = not in_fence
+                items.append(HLine(curses.ACS_LTEE, curses.ACS_RTEE))
                 continue
-            # Parse bold/code, then word-wrap the resulting segments
+
+            if in_fence:
+                # Verbatim code content: 4-space indent, cyan, no markdown
+                items.append([(A_DIM, "    "), (CP4, raw)])
+                continue
+
+            # Horizontal rule: --- / *** / ___ (3+ chars, optional surrounding spaces)
+            if re.match(r'^\s*(-{3,}|\*{3,}|_{3,})\s*$', raw):
+                items.append(HLine(curses.ACS_LTEE, curses.ACS_RTEE))
+                continue
+
+            # Headings: any number of # signs — green bold, all levels same
+            m = re.match(r'^(#+)\s+(.*)', raw)
+            if m:
+                text = m.group(2).strip()
+                for wrap_segs in wrap_token_line([(CP6 | A_BOLD, text)], wrap_w) or [[]]:
+                    items.append([(A_DIM, "  ")] + wrap_segs)
+                continue
+
+            # Normal line: parse bold/code spans, then word-wrap
             segs = parse_md(raw, A_NORMAL, CP1 | A_BOLD, CP4)
             for wrap_segs in wrap_token_line(segs, wrap_w) if raw.strip() else [[]]:
-                # indent: dim "  " prefix on every wrapped line
                 items.append([(A_DIM, "  ")] + wrap_segs)
+
         return items
 
     def _draw_taskoutput_view(self, rows, cols, inner, ctrl_rows):
@@ -3219,7 +3248,10 @@ class TUI:
 
         visible = all_items[self.taskoutput_scroll: self.taskoutput_scroll + content_rows]
         for i, item in enumerate(visible):
-            if isinstance(item, SecLine):
+            if isinstance(item, HLine):
+                self._draw_item(HEADER_ROWS + i, item, cols, inner,
+                                border_attr=curses.A_DIM)
+            elif isinstance(item, SecLine):
                 self._draw_item(HEADER_ROWS + i, item, cols, inner)
             else:
                 self._draw_item(HEADER_ROWS + i, ContentLine(item), cols, inner)
