@@ -5,12 +5,16 @@
 # keep the cursor visible by horizontal scrolling when input exceeds the
 # available terminal width. This test verifies scrolling activates for long
 # inputs and that the viewport is stable across cursor movement.
+#
+# Uses a fixed 80-col terminal so avail is deterministic (40 chars).
+# prefix="  Modify: " (10) + hint="   [enter] send  [esc] cancel" (29) + 1 = 40 chars
+# consumed, leaving avail = 80 - 1 - 10 - 29 = 40.
 
 source "$(dirname "$0")/helper.sh"
 
 run() {
     echo "--- test: modify prompt viewport scrolling ---"
-    tui_start
+    tui_start_sized 80 24
 
     # Navigate into the first rule's detail view.
     # Use "\[m\]" — "modify" would falsely match "modified" in the main list.
@@ -33,29 +37,21 @@ run() {
         tui_stop; return
     fi
 
-    # Type 60 a's in one batch (tui_type_n batches single chars into one send-keys call).
-    # The TUI event loop processes one keystroke per iteration with ~50ms idle sleep,
-    # so 60 chars can take ~3s to fully process. Poll until the visible char count
-    # stabilizes (unchanged for 3 consecutive 100ms checks) rather than sleeping fixed.
+    # Type 60 a's. At 80 cols, avail=40, so the cursor ends at position 60 and
+    # voff = 60 - 40 + 1 = 21, showing inp[21:61] = 40 a's.
+    # Poll until exactly 40 a's are visible — this is the deterministic condition
+    # that proves both scrolling activated AND all 60 keystrokes were processed.
+    local EXPECTED_AVAIL=40
     tui_type_n 60 a
-    # "Modify: a" (one space then immediate 'a') is specific to typed input.
-    # The empty-input hint "Modify:    [enter]..." has 3+ spaces, so no false positive.
     tui_wait_for "Modify: a"
-    local _prev_count="-1" _stable=0 _cur _count
-    for _ in $(seq 1 50); do
+    local _cur _count
+    for _ in $(seq 1 100); do
         sleep 0.1
         _cur=$(tui_grep "Modify:.*")
         _count=$(echo "$_cur" | sed 's/^Modify: //' | grep -o '^a*' | tr -d '\n' | wc -c | tr -d ' ')
-        if [[ "$_count" -gt 0 && "$_count" -eq "$_prev_count" ]]; then
-            (( _stable++ )) || true
-            [[ $_stable -ge 3 ]] && break
-        else
-            _stable=0
-            _prev_count="$_count"
-        fi
+        [[ "$_count" -eq "$EXPECTED_AVAIL" ]] && break
     done
 
-    # Count visible a's immediately after "Modify: " on screen
     local end_line vis_end
     end_line=$(tui_grep "Modify:.*")
     vis_end=$(echo "$end_line" | sed 's/^Modify: //' | grep -o '^a*' | tr -d '\n' | wc -c | tr -d ' ')
@@ -69,13 +65,28 @@ run() {
         tui_fail "all 60 chars visible — viewport scrolling did not activate (line: $end_line)"
         tui_stop; return
     fi
+    if [[ "$vis_end" -ne "$EXPECTED_AVAIL" ]]; then
+        tui_fail "expected $EXPECTED_AVAIL visible at cursor-end, got $vis_end (line: $end_line)"
+        tui_stop; return
+    fi
 
-    local avail="$vis_end"
-
-    # Move cursor to start; viewport should shift left revealing the first $avail chars.
-    # tui_type_n batches named keys into chunks of 20 with 50ms inter-chunk pauses.
+    # Move cursor to start; voff should become 0, revealing inp[0:40] = 40 a's.
+    # Poll for stability: repeat the 60-Left batch until the visible count is
+    # unchanged for 3 consecutive 100ms checks (handles slow parallel test load).
     tui_type_n 60 Left
-    sleep 0.3   # wait for curses to settle after bulk cursor movement
+    local _prev="-1" _stable=0
+    for _ in $(seq 1 80); do
+        sleep 0.1
+        _cur=$(tui_grep "Modify:.*")
+        _count=$(echo "$_cur" | sed 's/^Modify: //' | grep -o '^a*' | tr -d '\n' | wc -c | tr -d ' ')
+        if [[ "$_count" -eq "$_prev" ]]; then
+            (( _stable++ )) || true
+            [[ $_stable -ge 3 ]] && break
+        else
+            _stable=0
+            _prev="$_count"
+        fi
+    done
 
     local start_line vis_start
     start_line=$(tui_grep "Modify:.*")
@@ -86,12 +97,12 @@ run() {
         tui_fail "no chars visible at cursor-start (line: $start_line)"
         tui_stop; return
     fi
-    if [[ "$vis_start" -ne "$avail" ]]; then
-        tui_fail "visible count changed with cursor movement ($avail at end, $vis_start at start) — voff unstable"
+    if [[ "$vis_start" -ne "$EXPECTED_AVAIL" ]]; then
+        tui_fail "visible count changed with cursor movement ($vis_end at end, $vis_start at start) — voff unstable"
         tui_stop; return
     fi
 
-    tui_pass "viewport stable at avail=$avail chars (end=$vis_end, start=$vis_start)"
+    tui_pass "viewport stable at avail=$EXPECTED_AVAIL chars (end=$vis_end, start=$vis_start)"
     tui_stop
 }
 
