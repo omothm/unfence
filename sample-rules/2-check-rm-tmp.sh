@@ -2,7 +2,6 @@
 # Special case: rm / rmdir / truncate targeting only safe paths (/tmp/ or ~/.claude/).
 # rm -rf is already in the DENY list and will be caught before this rule.
 
-read -ra TOKENS <<< "$COMMAND"
 verb="${TOKENS[0]}"
 [[ "$verb" == "rm" || "$verb" == "rmdir" || "$verb" == "truncate" ]] || { echo defer; exit 0; }
 

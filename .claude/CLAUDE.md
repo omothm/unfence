@@ -46,10 +46,10 @@ Controlled by filename. Current ordering convention:
 ### Creating a New Rule
 
 1. Choose a filename that places it in the right execution order.
-2. The script must read `$COMMAND` and echo a single verdict to stdout.
+2. The script must echo a single verdict to stdout.
 3. Default to `echo defer` when the rule doesn't apply.
 4. Keep stderr silent (`2>/dev/null` is applied by the engine, but avoid noisy output).
-5. **Handle both quote styles.** When a rule extracts a quoted argument value (e.g., `-c '...'` or `-c "..."`), it must accept both single and double quotes and behave identically for both. A rule that only handles one quote style will silently miss the other. Always test the same command with both quote styles.
+5. **`TOKENS` is engine-provided — do not re-tokenize.** The engine pre-populates `TOKENS` (a bash array) by splitting `$COMMAND` with a quote-aware tokenizer before sourcing each rule. Rules read `$COMMAND` for the raw string and `TOKENS` for the pre-split array. Never add `read -ra TOKENS <<< "$COMMAND"` — it re-splits on whitespace without respecting quotes and will corrupt tokens containing spaces inside `$()` or quoted strings.
 
 ## Tests
 

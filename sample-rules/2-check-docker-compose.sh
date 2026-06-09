@@ -2,7 +2,6 @@
 # Special case: docker-compose (hyphenated) with allowed subcommands.
 # docker compose (space) is already covered by the ALLOW list in 1-lists.sh.
 
-read -ra TOKENS <<< "$COMMAND"
 [[ "${TOKENS[0]}" != "docker-compose" ]] && echo defer && exit 0
 
 allowed_subs=(ps logs config up down build pull exec)

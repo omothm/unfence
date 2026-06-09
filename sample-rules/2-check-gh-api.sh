@@ -2,7 +2,6 @@
 # Special case: gh api read-only GET requests.
 # Blocks explicit non-GET methods and mutation flags (-f, --raw-field, --input).
 
-read -ra TOKENS <<< "$COMMAND"
 [[ "${TOKENS[0]}" == "gh" && "${TOKENS[1]}" == "api" ]] || { echo defer; exit 0; }
 
 # Special case: gh api graphql — always POST but read/write is determined by

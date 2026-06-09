@@ -9,9 +9,6 @@
 # Only standard system binary directories are matched. Custom or unknown paths
 # are left alone (defer) — we never silently rename arbitrary executables.
 
-read -ra TOKENS <<< "$COMMAND"
-[[ ${#TOKENS[@]} -eq 0 ]] && echo defer && exit 0
-
 cmd0="${TOKENS[0]}"
 
 # Only process absolute paths

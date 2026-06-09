@@ -18,9 +18,6 @@
 # needed. The pattern is always the same: match cmd0, walk tokens, skip known
 # flag-value pairs, recurse if anything changed.
 
-read -ra TOKENS <<< "$COMMAND"
-[[ ${#TOKENS[@]} -eq 0 ]] && echo defer && exit 0
-
 cmd0="${TOKENS[0]}"
 stripped=("$cmd0")
 changed=false

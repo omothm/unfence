@@ -306,11 +306,48 @@ strip_redirections() {
 }
 
 tokenize() {
-  local line
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    local arr; read -ra arr <<< "$line"
-    printf '%s\n' "${arr[@]}"
-  done <<< "$1"
+  # Quote-aware word splitter. Splits on unquoted whitespace; preserves quotes
+  # in output tokens (same as the shell's word-splitting stage, before expansion).
+  # Tracks $(...) depth inside double quotes so spaces in "$(cmd with spaces)"
+  # do not split the token.
+  local s="$1" len=${#1} i=0
+  local tok="" in_single=false in_double=false subsh_depth=0
+  while (( i < len )); do
+    local ch="${s:$i:1}"
+    if $in_single; then
+      tok+="$ch"; (( i++ ))
+      [[ "$ch" == "'" ]] && in_single=false
+      continue
+    fi
+    if $in_double; then
+      if [[ "$ch" == "\\" ]] && (( i+1 < len )); then
+        tok+="${s:$i:2}"; (( i += 2 )); continue
+      fi
+      if [[ "$ch" == '"' ]] && (( subsh_depth == 0 )); then
+        tok+="$ch"; in_double=false; (( i++ )); continue
+      fi
+      if [[ "${s:$i:2}" == '$(' ]]; then
+        (( subsh_depth++ )); tok+='$('; (( i += 2 )); continue
+      fi
+      if [[ "$ch" == ')' ]] && (( subsh_depth > 0 )); then
+        (( subsh_depth-- )); tok+="$ch"; (( i++ )); continue
+      fi
+      tok+="$ch"; (( i++ )); continue
+    fi
+    # Unquoted context
+    if [[ "$ch" == "'" ]]; then
+      in_single=true; tok+="$ch"; (( i++ )); continue
+    fi
+    if [[ "$ch" == '"' ]]; then
+      in_double=true; tok+="$ch"; (( i++ )); continue
+    fi
+    if [[ "$ch" == ' ' || "$ch" == $'\t' ]]; then
+      [[ -n "$tok" ]] && printf '%s\n' "$tok"
+      tok=""; (( i++ )); continue
+    fi
+    tok+="$ch"; (( i++ ))
+  done
+  [[ -n "$tok" ]] && printf '%s\n' "$tok"
 }
 
 # ── Rule pipeline ──────────────────────────────────────────────────────────────
@@ -437,7 +474,7 @@ classify_single() {
   # ── Run rules in sorted order ──────────────────────────────────────────────
   for rule_file in "${RULE_FILES[@]}"; do
     local verdict
-    verdict=$(COMMAND="$normalized" PROJECT_CONFIG="$PROJECT_CONFIG" COMMAND_CWD="$SESSION_CWD" source "$rule_file" 2>/dev/null)
+    verdict=$(eval "$(declare -p TOKENS)"; COMMAND="$normalized" PROJECT_CONFIG="$PROJECT_CONFIG" COMMAND_CWD="$SESSION_CWD" source "$rule_file" 2>/dev/null)
 
     case "$verdict" in
       allow|deny|ask)

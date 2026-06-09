@@ -7,7 +7,6 @@
 #
 # The same pattern applies to any tool with a mix of safe and unsafe operations.
 
-read -ra TOKENS <<< "$COMMAND"
 [[ "${TOKENS[0]}" != "curl" ]] && echo defer && exit 0
 
 i=0

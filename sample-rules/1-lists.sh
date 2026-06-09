@@ -186,7 +186,7 @@ ALLOW=(
 
 # ── Matching ─────────────────────────────────────────────────────────────────
 
-read -ra CMD_TOKENS <<< "$COMMAND"
+CMD_TOKENS=("${TOKENS[@]}")
 [[ ${#CMD_TOKENS[@]} -eq 0 ]] && echo allow && exit 0
 
 # A rule matches if: its positional words appear in order at the start of the

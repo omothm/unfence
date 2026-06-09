@@ -12,7 +12,6 @@
 #   rm --recursive --force  (long flags)
 #   rm -rRf     (mixed combined)
 
-read -ra TOKENS <<< "$COMMAND"
 [[ "${TOKENS[0]}" != "rm" ]] && echo defer && exit 0
 
 has_recursive=false

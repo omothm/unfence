@@ -7,9 +7,6 @@
 #
 # This is the "0-*" (preprocessing) layer — strip the wrapper, recurse.
 
-read -ra TOKENS <<< "$COMMAND"
-[[ ${#TOKENS[@]} -eq 0 ]] && echo defer && exit 0
-
 # Unwrap eval: eval "cmd args" or eval cmd args
 if [[ "${TOKENS[0]}" == "eval" ]]; then
   (( ${#TOKENS[@]} < 2 )) && echo defer && exit 0

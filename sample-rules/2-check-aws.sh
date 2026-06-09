@@ -2,7 +2,6 @@
 # Special case: AWS read-only commands.
 # Allows any aws command that contains a read-only verb token.
 
-read -ra TOKENS <<< "$COMMAND"
 [[ "${TOKENS[0]}" != "aws" ]] && echo defer && exit 0
 
 for tok in "${TOKENS[@]}"; do
