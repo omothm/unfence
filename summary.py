@@ -2149,20 +2149,13 @@ class TUI:
         if verdict == "defer":
             deferred = res.get("deferred_parts") or []
             if deferred:
-                MAX_PART = 50
-                SEP      = "  ·  "
+                MAX_PART = cols - 20
                 prefix   = "   unmatched: "
                 indent   = " " * len(prefix)
-                formatted = [p[:MAX_PART] + "…" if len(p) > MAX_PART else p for p in deferred]
-                current = prefix
-                for i, part in enumerate(formatted):
-                    chunk = (SEP if i > 0 else "") + part
-                    if i > 0 and len(current) + len(chunk) > cols:
-                        lines.append([(A_DIM, current)])
-                        current = indent + part
-                    else:
-                        current += chunk
-                lines.append([(A_DIM, current)])
+                for i, part in enumerate(deferred):
+                    truncated = part[:MAX_PART] + "…" if len(part) > MAX_PART else part
+                    pfx = prefix if i == 0 else indent
+                    lines.append([(A_DIM, pfx + truncated)])
         return lines
 
     def _run_eval_async(self, cmd: str, result_attr: str, highlight: bool = True, cwd: str = ""):
