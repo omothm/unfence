@@ -35,15 +35,23 @@ This is a very long fence line that should wrap because it exceeds eighty column
 Done.
 LOG
 
-    # Inject a task history entry pointing at the log file.
-    jq -n --arg log "$log_file" '[{
+    # Inject a task history entry with the log content inlined as output_lines.
+    # Read the log file into a JSON array of strings, then embed it directly.
+    local output_lines_json
+    output_lines_json=$(python3 -c "
+import json, sys
+with open(sys.argv[1], errors='replace') as f:
+    lines = f.read().splitlines()
+print(json.dumps(lines[-100:]))
+" "$log_file")
+    jq -n --argjson lines "$output_lines_json" '[{
         "name":         "test-task",
         "purpose":      "Test task for output overlay TUI test",
         "started_str":  "10:00:00",
         "finished_str": "10:00:05",
         "elapsed_secs": 5.0,
         "exit_code":    0,
-        "log_path":     $log
+        "output_lines": $lines
     }]' > "$_TUI_FIXTURE_DIR/cache/.task-history.json"
 
     # Start TUI at 80×30 so fence lines have a predictable wrap width.

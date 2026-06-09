@@ -2130,6 +2130,10 @@ class TUI:
             with self._lock:
                 existing = next((t for t in self._bg_tasks if t["proc_attr"] == proc_attr), None)
                 if existing:
+                    try:
+                        output_lines = log_path.read_text(errors="replace").splitlines()[-100:]
+                    except Exception:
+                        output_lines = []
                     history_entry = {
                         "name":         existing["name"],
                         "purpose":      existing["purpose"],
@@ -2137,7 +2141,7 @@ class TUI:
                         "finished_str": time.strftime("%H:%M:%S"),
                         "elapsed_secs": finished_at - existing["started_at"],
                         "exit_code":    proc.returncode if proc.returncode is not None else 0,
-                        "log_path":     log_path.as_posix() if log_path else None,
+                        "output_lines": output_lines,
                     }
                     self._task_history.insert(0, history_entry)
                     if len(self._task_history) > 20:
@@ -3624,7 +3628,7 @@ class TUI:
                 kill_all_hint = "[X] kill all  " if n_running > 1 else ""
                 kill_hint     = "[x] kill  " if sel and sel["_kind"] == "running" else ""
                 output_hint   = "[o] output  " if (sel and sel["_kind"] == "history"
-                                                    and sel.get("log_path")) else ""
+                                                    and sel.get("output_lines") is not None) else ""
                 segs = [(A_DIM, f"  [↑↓] navigate  {kill_hint}{kill_all_hint}{output_hint}[esc/b] close")]
 
         elif self.eval_open:
@@ -3991,15 +3995,10 @@ class TUI:
                             self._invalidate()
                     elif ev == ord('o'):
                         sel = all_items[self.bgtasks_cursor] if 0 <= self.bgtasks_cursor < n else None
-                        if sel and sel["_kind"] == "history" and sel.get("log_path"):
-                            log_p = Path(sel["log_path"])
-                            try:
-                                lines = log_p.read_text(errors="replace").splitlines()
-                                self._taskoutput_lines = lines[-100:]
-                            except Exception:
-                                self._taskoutput_lines = ["(could not read log file)"]
+                        if sel and sel["_kind"] == "history" and sel.get("output_lines") is not None:
+                            self._taskoutput_lines = sel["output_lines"]
                             self._taskoutput_title = sel["name"]
-                            self.taskoutput_scroll = len(self._taskoutput_lines)  # clamped to bottom on first render
+                            self.taskoutput_scroll = len(self._taskoutput_lines)
                             self.taskoutput_open = True
                             self._invalidate()
                 continue
