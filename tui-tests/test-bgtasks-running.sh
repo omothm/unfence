@@ -61,15 +61,16 @@ MOCK
         tui_fail "metadata: expected 'PID: <num>' or 'PID: (preprocessing)' (screen: $(echo "$screen" | tail -5))"
     fi
 
-    # 4. Kill the task: press [x], confirm with [y], verify indicator gone
+    # 4. Kill the task: press [x], confirm with [y], verify running indicator gone
     tui_send "x" ""
     tui_wait_for "confirm\|Kill" 20 \
         || { tui_fail "[x]: kill confirmation prompt did not appear"; tui_stop; return; }
     tui_send "y" ""
-    # After kill, task list should be empty → "No tasks currently running."
-    tui_wait_for "No tasks currently running" 60 \
+    # After kill, the running-task indicator in the header should disappear
+    # (the task may appear in history but is no longer active)
+    tui_wait_for_not "running \[b\]" 60 \
         || { tui_fail "[y]: task not removed after kill confirm"; tui_stop; return; }
-    tui_assert_screen "after kill: empty state shown" "No tasks currently running"
+    tui_pass "[y]: task removed; header indicator gone after kill"
 
     # Close view and verify header indicator is gone
     tui_send "b" ""

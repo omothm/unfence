@@ -25,6 +25,7 @@ ACCEPTED_REC    = CACHE_DIR / ".accepted-recs.json"
 DISABLED_FLAG   = CACHE_DIR / ".disabled"
 SKILL_FILE      = PROJECT_DIR / ".claude" / "prompts" / "implement-recommendations.md"
 AUTO_ALLOW_STATE = CACHE_DIR / ".auto-allow-state.json"
+TASK_HISTORY_CACHE = CACHE_DIR / ".task-history.json"
 
 
 # ── Data helpers ──────────────────────────────────────────────────────────────
@@ -454,6 +455,20 @@ def auto_allow_stale() -> bool:
         return "entry_subs" not in d
     except Exception:
         return True
+
+
+def load_task_history() -> list:
+    try:
+        return json.loads(TASK_HISTORY_CACHE.read_text())
+    except Exception:
+        return []
+
+
+def save_task_history(entries: list):
+    try:
+        TASK_HISTORY_CACHE.write_text(json.dumps(entries, indent=2))
+    except Exception:
+        pass
 
 
 def load_deferred_commands() -> list[tuple[str, str, str]]:
@@ -1148,11 +1163,17 @@ class TUI:
 
         # Background tasks view state
         self._bg_tasks: list[dict] = []  # protected by self._lock; each entry: name/purpose/started_at/started_str/pid/proc_attr/active_attr
+        self._task_history: list[dict] = load_task_history()  # completed tasks, max 20, newest-first; persisted to disk
         self.bgtasks_open   = False
-        self.bgtasks_cursor = 0          # selected task index (item-units)
+        self.bgtasks_cursor = 0          # selected task index across running+history (item-units)
         self.bgtasks_scroll = 0          # scroll offset (row-units)
         self._bgtasks_confirm: "dict | str | None" = None  # task-dict | "all" | None
         self._bgtasks_timer_tick = 0.0   # monotonic; for 1-Hz timer re-render
+        # Task output overlay state
+        self.taskoutput_open   = False
+        self._taskoutput_lines: list[str] = []
+        self._taskoutput_title = ""
+        self.taskoutput_scroll = 0
 
         # Body cursor (selected rule index in main list)
         self.body_cursor            = 0
@@ -1845,7 +1866,7 @@ class TUI:
             if self._detail_copy_flash_msg is not None:
                 return self.CTRL_ROWS
             return 1 + len(self._wrap_ctrl_tokens(self._detail_ctrl_tokens(), inner))
-        if self.bgtasks_open:
+        if self.taskoutput_open or self.bgtasks_open:
             return self.CTRL_ROWS
         if self.eval_open:
             return 1 + len(self._eval_ctrl_lines(inner + 2))  # +2: unbordered uses full cols
@@ -2105,7 +2126,23 @@ class TUI:
 
         def poll():
             proc.wait()
+            finished_at = time.monotonic()
             with self._lock:
+                existing = next((t for t in self._bg_tasks if t["proc_attr"] == proc_attr), None)
+                if existing:
+                    history_entry = {
+                        "name":         existing["name"],
+                        "purpose":      existing["purpose"],
+                        "started_str":  existing["started_str"],
+                        "finished_str": time.strftime("%H:%M:%S"),
+                        "elapsed_secs": finished_at - existing["started_at"],
+                        "exit_code":    proc.returncode if proc.returncode is not None else 0,
+                        "log_path":     log_path.as_posix() if log_path else None,
+                    }
+                    self._task_history.insert(0, history_entry)
+                    if len(self._task_history) > 20:
+                        self._task_history.pop()
+                    save_task_history(list(self._task_history))
                 setattr(self, proc_attr, None)
                 setattr(self, active_attr, False)
                 self._bg_tasks = [t for t in self._bg_tasks if t["proc_attr"] != proc_attr]
@@ -2998,14 +3035,21 @@ class TUI:
         self.stdscr.refresh()
         self.dirty = False
 
+    def _bgtasks_flat_list(self) -> list[dict]:
+        """Return a flat ordered list of all tasks: running first, then history.
+        Each entry has a '_kind' key: 'running' or 'history'."""
+        with self._lock:
+            running = [dict(t, _kind="running") for t in self._bg_tasks]
+            history = [dict(t, _kind="history") for t in self._task_history]
+        return running + history
+
     def _draw_bgtasks_view(self, rows, cols, inner):
         A_NORMAL = curses.A_NORMAL
         A_DIM    = curses.A_DIM
         A_BOLD   = curses.A_BOLD
+        CP2 = curses.color_pair(2)
         CP4 = curses.color_pair(4)
-
-        with self._lock:
-            tasks = list(self._bg_tasks)
+        CP6 = curses.color_pair(6)
 
         ctrl_rows    = self.CTRL_ROWS
         TASK_ROWS    = 4   # SecLine + purpose + metadata + divider
@@ -3019,7 +3063,7 @@ class TUI:
         except curses.error:
             pass
         self._draw_item(1, ContentLine(
-            [(A_DIM, "  Live Claude subprocesses running in the background.")]),
+            [(A_DIM, "  Background tasks — running and recently completed.")]),
             cols, inner)
         self._draw_item(2, HLine(curses.ACS_LTEE, curses.ACS_RTEE), cols, inner)
 
@@ -3027,43 +3071,65 @@ class TUI:
         if content_rows <= 0:
             return
 
-        if not tasks:
+        all_items = self._bgtasks_flat_list()
+        n = len(all_items)
+
+        if not all_items:
             self._draw_item(HEADER_ROWS, ContentLine(
-                [(A_DIM, "  No tasks currently running.")]),
+                [(A_DIM, "  No tasks running or recorded.")]),
                 cols, inner)
             self._draw_item(HEADER_ROWS + 1,
                             HLine(curses.ACS_LLCORNER, curses.ACS_LRCORNER), cols, inner)
             return
 
         # ── Clamp cursor and scroll ────────────────────────────────────────────
-        n = len(tasks)
         self.bgtasks_cursor = max(0, min(self.bgtasks_cursor, n - 1))
-        # Scroll in row-units; ensure cursor item is visible
         cursor_row_start = self.bgtasks_cursor * TASK_ROWS
         cursor_row_end   = cursor_row_start + TASK_ROWS
         if cursor_row_start < self.bgtasks_scroll:
             self.bgtasks_scroll = cursor_row_start
         elif cursor_row_end > self.bgtasks_scroll + content_rows:
             self.bgtasks_scroll = max(0, cursor_row_end - content_rows)
-        # Snap scroll to TASK_ROWS boundary so items don't split
         self.bgtasks_scroll = (self.bgtasks_scroll // TASK_ROWS) * TASK_ROWS
         max_scroll = max(0, n * TASK_ROWS - content_rows)
         self.bgtasks_scroll = max(0, min(self.bgtasks_scroll, max_scroll))
 
-        # ── Render visible tasks ───────────────────────────────────────────────
-        total_content_rows = n * TASK_ROWS
+        # ── Build row list ─────────────────────────────────────────────────────
         all_rows: list = []
-        for i, task in enumerate(tasks):
+        prev_kind = None
+        for i, task in enumerate(all_items):
             is_selected = (i == self.bgtasks_cursor)
+            kind        = task["_kind"]
             sec_attr    = A_BOLD | CP4 if is_selected else A_DIM
-            elapsed     = _fmt_elapsed(task["started_at"])
+            is_last     = (i == n - 1)
+
+            if kind == "running":
+                elapsed = _fmt_elapsed(task["started_at"])
+                pid_str = str(task["pid"]) if task["pid"] is not None else "(preprocessing)"
+                meta    = f"  Started: {task['started_str']}  ·  PID: {pid_str}  ·  Elapsed: {elapsed}"
+                status_segs: list = [(CP4 | A_BOLD, " ▶ "), (A_DIM, "running")]
+            else:
+                elapsed_s = task.get("elapsed_secs", 0)
+                elapsed   = f"{elapsed_s:.1f}s"
+                exit_code = task.get("exit_code", 0)
+                if exit_code != 0:
+                    exit_segs: list = [(CP2 | A_BOLD, f"exit {exit_code}")]
+                else:
+                    exit_segs = [(CP6, "ok")]
+                meta = (f"  Finished: {task.get('finished_str', '?')}  ·"
+                        f"  Duration: {elapsed}  ·  ")
+                status_segs = exit_segs
+
             all_rows.append(SecLine(label=task["name"], attr=sec_attr))
-            all_rows.append(ContentLine([(A_DIM, f"  {task['purpose']}")], border_attr=(CP4 if is_selected else None)))
-            pid_str = str(task["pid"]) if task["pid"] is not None else "(preprocessing)"
-            all_rows.append(ContentLine(
-                [(A_DIM, f"  Started: {task['started_str']}  ·  PID: {pid_str}  ·  Elapsed: {elapsed}")],
-                border_attr=(CP4 if is_selected else None)))
-            is_last = (i == n - 1)
+            all_rows.append(ContentLine([(A_DIM, f"  {task['purpose']}")],
+                                        border_attr=(CP4 if is_selected else None)))
+            if kind == "running":
+                all_rows.append(ContentLine([(A_DIM, meta)],
+                                            border_attr=(CP4 if is_selected else None)))
+            else:
+                all_rows.append(ContentLine(
+                    [(A_DIM, meta)] + status_segs,
+                    border_attr=(CP4 if is_selected else None)))
             if is_last:
                 all_rows.append(HLine(curses.ACS_LLCORNER, curses.ACS_LRCORNER))
             else:
@@ -3075,9 +3141,70 @@ class TUI:
         for i, item in enumerate(visible):
             self._draw_item(HEADER_ROWS + i, item, cols, inner)
 
-        # Draw scroll indicators on header divider (row 2)
         can_up   = self.bgtasks_scroll > 0
         can_down = self.bgtasks_scroll < max_scroll
+        self._draw_scroll_indicators(2, cols, can_up, can_down)
+
+    # ── Task output overlay ───────────────────────────────────────────────────
+
+    def _render_taskoutput(self):
+        rows, cols = self.stdscr.getmaxyx()
+        inner      = cols - 2
+        ctrl_rows  = self.CTRL_ROWS
+        self.stdscr.erase()
+        self._draw_taskoutput_view(rows, cols, inner, ctrl_rows)
+        self._draw_controls(rows, cols, inner, ctrl_rows)
+        self._hide_cursor()
+        self._apply_cursor()
+        self.stdscr.refresh()
+        self.dirty = False
+
+    def _draw_taskoutput_view(self, rows, cols, inner, ctrl_rows):
+        A_DIM   = curses.A_DIM
+        A_BOLD  = curses.A_BOLD
+
+        HEADER_ROWS = 3
+        content_rows = max(0, rows - ctrl_rows - HEADER_ROWS)
+
+        label = f" Output: {self._taskoutput_title} "
+        self._draw_item(0, HLine(curses.ACS_ULCORNER, curses.ACS_URCORNER), cols, inner)
+        try:
+            self.stdscr.addstr(0, max(1, (cols - len(label)) // 2), label, A_BOLD)
+        except curses.error:
+            pass
+        self._draw_item(1, ContentLine([(A_DIM, "  Last 100 lines of task log.")]),
+                        cols, inner)
+        self._draw_item(2, HLine(curses.ACS_LTEE, curses.ACS_RTEE), cols, inner)
+
+        if content_rows <= 0:
+            return
+
+        lines = self._taskoutput_lines
+        n = len(lines)
+
+        # Clamp scroll
+        max_scroll = max(0, n - content_rows)
+        self.taskoutput_scroll = max(0, min(self.taskoutput_scroll, max_scroll))
+
+        if not lines:
+            self._draw_item(HEADER_ROWS, ContentLine([(A_DIM, "  (no output)")]), cols, inner)
+            self._draw_item(HEADER_ROWS + 1, HLine(curses.ACS_LLCORNER, curses.ACS_LRCORNER),
+                            cols, inner)
+            return
+
+        visible_lines = lines[self.taskoutput_scroll: self.taskoutput_scroll + content_rows]
+        for i, line in enumerate(visible_lines):
+            self._draw_item(HEADER_ROWS + i,
+                            ContentLine([(A_DIM, "  " + line)]), cols, inner)
+
+        # Bottom border
+        bottom_row = HEADER_ROWS + min(len(visible_lines), content_rows)
+        if bottom_row < rows - ctrl_rows:
+            self._draw_item(bottom_row, HLine(curses.ACS_LLCORNER, curses.ACS_LRCORNER),
+                            cols, inner)
+
+        can_up   = self.taskoutput_scroll > 0
+        can_down = self.taskoutput_scroll < max_scroll
         self._draw_scroll_indicators(2, cols, can_up, can_down)
 
     # ── Change log view ───────────────────────────────────────────────────────
@@ -3351,7 +3478,7 @@ class TUI:
         ctrl_sep  = rows - ctrl_rows
         pane_open = self.eval_open or self.shadow_open or self.rec_open
         ctrl_battr = CP8 if pane_open else None
-        box_open = pane_open or self.detail_open or self.log_open or self.bgtasks_open
+        box_open = pane_open or self.detail_open or self.log_open or self.bgtasks_open or self.taskoutput_open
         sep_lch = curses.ACS_LLCORNER if box_open else curses.ACS_HLINE
         sep_rch = curses.ACS_LRCORNER if box_open else curses.ACS_HLINE
         self._draw_item(ctrl_sep, HLine(sep_lch, sep_rch),
@@ -3412,20 +3539,26 @@ class TUI:
                 return
             self._hide_cursor()
 
+        elif self.taskoutput_open:
+            segs = [(A_DIM, "  [↑↓] scroll  ·  [esc/o] close")]
+
         elif self.bgtasks_open:
-            with self._lock:
-                bg_tasks = list(self._bg_tasks)
             confirm = self._bgtasks_confirm
             if confirm == "all":
-                n = len(bg_tasks)
-                segs = [(A_NORMAL, f"  Kill all {n} task{'s' if n != 1 else ''}?   [y] confirm   [n/esc] cancel")]
+                with self._lock:
+                    n = len(self._bg_tasks)
+                segs = [(A_NORMAL, f"  Kill all {n} running task{'s' if n != 1 else ''}?   [y] confirm   [n/esc] cancel")]
             elif confirm is not None:
                 segs = [(A_NORMAL, f"  Kill \"{confirm['name']}\"?   [y] confirm   [n/esc] cancel")]
             else:
-                n = len(bg_tasks)
-                kill_all_hint = "[X] kill all  " if n > 1 else ""
-                kill_hint = "[x] kill  " if n else ""
-                segs = [(A_DIM, f"  [↑↓] navigate  {kill_hint}{kill_all_hint}[esc/b] close")]
+                all_items = self._bgtasks_flat_list()
+                n_running = sum(1 for t in all_items if t["_kind"] == "running")
+                sel = all_items[self.bgtasks_cursor] if 0 <= self.bgtasks_cursor < len(all_items) else None
+                kill_all_hint = "[X] kill all  " if n_running > 1 else ""
+                kill_hint     = "[x] kill  " if sel and sel["_kind"] == "running" else ""
+                output_hint   = "[o] output  " if (sel and sel["_kind"] == "history"
+                                                    and sel.get("log_path")) else ""
+                segs = [(A_DIM, f"  [↑↓] navigate  {kill_hint}{kill_all_hint}{output_hint}[esc/b] close")]
 
         elif self.eval_open:
             for i, line_segs in enumerate(self._eval_ctrl_lines(cols)):
@@ -3564,6 +3697,9 @@ class TUI:
             self._hide_cursor()
 
     def render(self):
+        if self.taskoutput_open:
+            self._render_taskoutput()
+            return
         if self.bgtasks_open:
             self._render_bgtasks()
             return
@@ -3711,6 +3847,31 @@ class TUI:
             rows, cols    = self.stdscr.getmaxyx()
             inner         = cols - 2
 
+            # ── Task output overlay ───────────────────────────────────────────
+            if self.taskoutput_open:
+                if ev in (27, ord('o'), ord('O')):
+                    self.taskoutput_open = False
+                    self._invalidate()
+                elif ev in (curses.KEY_UP, ord('k')):
+                    self.taskoutput_scroll = max(0, self.taskoutput_scroll - 1)
+                    self.dirty = True
+                elif ev in (curses.KEY_DOWN, ord('j')):
+                    self.taskoutput_scroll += 1  # clamped in _draw_taskoutput_view
+                    self.dirty = True
+                elif ev == curses.KEY_PPAGE:
+                    self.taskoutput_scroll = max(0, self.taskoutput_scroll - max(1, (rows - 4) // 2))
+                    self.dirty = True
+                elif ev == curses.KEY_NPAGE:
+                    self.taskoutput_scroll += max(1, (rows - 4) // 2)
+                    self.dirty = True
+                elif ev == curses.KEY_HOME:
+                    self.taskoutput_scroll = 0
+                    self.dirty = True
+                elif ev == curses.KEY_END:
+                    self.taskoutput_scroll = max(0, len(self._taskoutput_lines) - 1)
+                    self.dirty = True
+                continue
+
             # ── Background tasks view ─────────────────────────────────────────
             if self.bgtasks_open:
                 confirm = self._bgtasks_confirm
@@ -3735,34 +3896,44 @@ class TUI:
                     self.bgtasks_open = False
                     self._invalidate()
                 elif confirm is None:
+                    all_items = self._bgtasks_flat_list()
+                    n = len(all_items)
                     if ev in (curses.KEY_UP, ord('k')):
                         self.bgtasks_cursor = max(0, self.bgtasks_cursor - 1)
                         self.dirty = True
                     elif ev in (curses.KEY_DOWN, ord('j')):
-                        with self._lock:
-                            n = len(self._bg_tasks)
                         self.bgtasks_cursor = min(max(0, n - 1), self.bgtasks_cursor + 1)
                         self.dirty = True
                     elif ev in (curses.KEY_PPAGE,):
                         self.bgtasks_cursor = max(0, self.bgtasks_cursor - max(1, (rows - 6) // 4))
                         self.dirty = True
                     elif ev in (curses.KEY_NPAGE,):
-                        with self._lock:
-                            n = len(self._bg_tasks)
                         self.bgtasks_cursor = min(max(0, n - 1),
                                                   self.bgtasks_cursor + max(1, (rows - 6) // 4))
                         self.dirty = True
                     elif ev == ord('x'):
-                        with self._lock:
-                            tasks = list(self._bg_tasks)
-                        if 0 <= self.bgtasks_cursor < len(tasks):
-                            self._bgtasks_confirm = dict(tasks[self.bgtasks_cursor])
+                        sel = all_items[self.bgtasks_cursor] if 0 <= self.bgtasks_cursor < n else None
+                        if sel and sel["_kind"] == "running":
+                            self._bgtasks_confirm = {k: v for k, v in sel.items() if k != "_kind"}
                             self._invalidate()
                     elif ev == ord('X'):
                         with self._lock:
-                            n = len(self._bg_tasks)
-                        if n:
+                            n_running = len(self._bg_tasks)
+                        if n_running:
                             self._bgtasks_confirm = "all"
+                            self._invalidate()
+                    elif ev == ord('o'):
+                        sel = all_items[self.bgtasks_cursor] if 0 <= self.bgtasks_cursor < n else None
+                        if sel and sel["_kind"] == "history" and sel.get("log_path"):
+                            log_p = Path(sel["log_path"])
+                            try:
+                                lines = log_p.read_text(errors="replace").splitlines()
+                                self._taskoutput_lines = lines[-100:]
+                            except Exception:
+                                self._taskoutput_lines = ["(could not read log file)"]
+                            self._taskoutput_title = sel["name"]
+                            self.taskoutput_scroll = 0
+                            self.taskoutput_open = True
                             self._invalidate()
                 continue
 
