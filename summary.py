@@ -3162,6 +3162,8 @@ class TUI:
     def _draw_taskoutput_view(self, rows, cols, inner, ctrl_rows):
         A_DIM   = curses.A_DIM
         A_BOLD  = curses.A_BOLD
+        A_NORMAL = curses.A_NORMAL
+        CP4 = curses.color_pair(4)
 
         HEADER_ROWS = 3
         content_rows = max(0, rows - ctrl_rows - HEADER_ROWS)
@@ -3195,7 +3197,8 @@ class TUI:
         visible_lines = lines[self.taskoutput_scroll: self.taskoutput_scroll + content_rows]
         for i, line in enumerate(visible_lines):
             self._draw_item(HEADER_ROWS + i,
-                            ContentLine([(A_DIM, "  " + line)]), cols, inner)
+                            ContentLine([(A_DIM, "  ")] + parse_md(line, A_NORMAL, A_BOLD, CP4)),
+                            cols, inner)
 
         # Bottom border
         bottom_row = HEADER_ROWS + min(len(visible_lines), content_rows)
@@ -3932,7 +3935,7 @@ class TUI:
                             except Exception:
                                 self._taskoutput_lines = ["(could not read log file)"]
                             self._taskoutput_title = sel["name"]
-                            self.taskoutput_scroll = 0
+                            self.taskoutput_scroll = len(self._taskoutput_lines)  # clamped to bottom on first render
                             self.taskoutput_open = True
                             self._invalidate()
                 continue
