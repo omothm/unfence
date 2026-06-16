@@ -94,9 +94,8 @@ def summarize_rule(rule: Path):
         "If the rule does NOT read $PROJECT_CONFIG, set this key to null.\n\n"
         + content
     )
-    haiku_model = os.environ.get("ANTHROPIC_DEFAULT_HAIKU_MODEL", "claude-haiku-4-5-20251001")
     result = subprocess.run(
-        ["claude", "--model", haiku_model,
+        ["claude", "--model", "haiku",
          "--setting-sources", "user,project,local",
          "--dangerously-skip-permissions",
          "--output-format", "text",
@@ -2074,7 +2073,7 @@ class TUI:
                        "--agent", agent,
                        "-p", prompt]
             else:
-                cmd = ["claude", "--model", "claude-sonnet-4-6",
+                cmd = ["claude", "--model", "sonnet",
                        "--setting-sources", "user,project,local",
                        "--dangerously-skip-permissions",
                        "--add-dir", str(RULES_DIR),
