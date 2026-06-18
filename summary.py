@@ -456,6 +456,16 @@ def auto_allow_stale() -> bool:
         return True
 
 
+def _append_cancel_log(log_path, task_name: str, reason: str):
+    """Append a cancellation line to a task's log file so silent exits are visible."""
+    try:
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        with open(log_path, "a") as f:
+            f.write(f"[{ts}] {task_name}: cancelled — {reason}\n")
+    except Exception:
+        pass
+
+
 def load_task_history() -> list:
     try:
         return json.loads(TASK_HISTORY_CACHE.read_text())
@@ -1161,7 +1171,7 @@ class TUI:
         self.eval_allow_result = None    # None | dict from Claude JSON output
 
         # Background tasks view state
-        self._bg_tasks: list[dict] = []  # protected by self._lock; each entry: name/purpose/started_at/started_str/pid/proc_attr/active_attr
+        self._bg_tasks: list[dict] = []  # protected by self._lock; each entry: name/purpose/started_at/started_wall/pid/proc_attr/active_attr
         self._task_history: list[dict] = load_task_history()  # completed tasks, max 20, newest-first; persisted to disk
         self.bgtasks_open   = False
         self.bgtasks_cursor = 0          # selected task index across running+history (item-units)
@@ -1425,6 +1435,8 @@ class TUI:
                     self.rec_analyzing = False
                 self._deregister_bg_task("_rec_proc")
                 save_rec_cache(prev_recs, dismissed, new_ts)
+                _append_cancel_log(CACHE_DIR / "rec-analysis.log",
+                                   "rec-analysis", "no new candidates after filtering")
                 self._invalidate()
                 return
 
@@ -1529,6 +1541,8 @@ class TUI:
 
             with self._lock:
                 if self._auto_allow_gen != gen:
+                    _append_cancel_log(CACHE_DIR / "auto-allow-analyzer.log",
+                                       "auto-allow-analyzer", "superseded by newer generation")
                     return
                 merged_subs       = {**self._auto_allow_entry_subs, **new_entry_subs}
                 merged_no_more    = set(self._auto_allow_no_more_defers)
@@ -1574,6 +1588,12 @@ class TUI:
                 self._deregister_bg_task("_auto_allow_proc")
                 save_auto_allow_state(new_ts, current_result, merged_subs, merged_no_more,
                                       merged_analyzed)
+                _append_cancel_log(CACHE_DIR / "auto-allow-analyzer.log",
+                                   "auto-allow-analyzer",
+                                   f"no new bases to analyze"
+                                   f" (new_entry_subs={len(new_entry_subs)},"
+                                   f" already_analyzed={len(already_analyzed)},"
+                                   f" no_more_defers={len(merged_no_more)})")
                 self._invalidate()
                 return
 
@@ -2096,18 +2116,18 @@ class TUI:
                 on_start()
             existing = next((t for t in self._bg_tasks if t["proc_attr"] == proc_attr), None)
             if existing:
-                existing["pid"]         = proc.pid
-                existing["started_at"]  = time.monotonic()
-                existing["started_str"] = time.strftime("%H:%M:%S")
+                existing["pid"]          = proc.pid
+                existing["started_at"]   = time.monotonic()
+                existing["started_wall"] = time.time()
             else:
                 self._bg_tasks.append({
-                    "name":        name,
-                    "purpose":     purpose,
-                    "started_at":  time.monotonic(),
-                    "started_str": time.strftime("%H:%M:%S"),
-                    "pid":         proc.pid,
-                    "proc_attr":   proc_attr,
-                    "active_attr": active_attr,
+                    "name":         name,
+                    "purpose":      purpose,
+                    "started_at":   time.monotonic(),
+                    "started_wall": time.time(),
+                    "pid":          proc.pid,
+                    "proc_attr":    proc_attr,
+                    "active_attr":  active_attr,
                 })
         self.dirty = True
 
@@ -2125,7 +2145,8 @@ class TUI:
 
         def poll():
             proc.wait()
-            finished_at = time.monotonic()
+            finished_at      = time.monotonic()
+            finished_wall    = time.time()
             with self._lock:
                 existing = next((t for t in self._bg_tasks if t["proc_attr"] == proc_attr), None)
                 if existing:
@@ -2134,13 +2155,13 @@ class TUI:
                     except Exception:
                         output_lines = []
                     history_entry = {
-                        "name":         existing["name"],
-                        "purpose":      existing["purpose"],
-                        "started_str":  existing["started_str"],
-                        "finished_str": time.strftime("%H:%M:%S"),
-                        "elapsed_secs": finished_at - existing["started_at"],
-                        "exit_code":    proc.returncode if proc.returncode is not None else 0,
-                        "output_lines": output_lines,
+                        "name":          existing["name"],
+                        "purpose":       existing["purpose"],
+                        "started_wall":  existing["started_wall"],
+                        "finished_wall": finished_wall,
+                        "elapsed_secs":  finished_at - existing["started_at"],
+                        "exit_code":     proc.returncode if proc.returncode is not None else 0,
+                        "output_lines":  output_lines,
                     }
                     self._task_history.insert(0, history_entry)
                     if len(self._task_history) > 20:
@@ -3107,9 +3128,11 @@ class TUI:
             is_last     = (i == n - 1)
 
             if kind == "running":
-                elapsed = _fmt_elapsed(task["started_at"])
-                pid_str = str(task["pid"]) if task["pid"] is not None else "(preprocessing)"
-                meta    = f"  Started: {task['started_str']}  ·  PID: {pid_str}  ·  Elapsed: {elapsed}"
+                elapsed  = _fmt_elapsed(task["started_at"])
+                pid_str  = str(task["pid"]) if task["pid"] is not None else "(preprocessing)"
+                wall     = task.get("started_wall")
+                started  = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(wall)) if wall else task.get("started_str", "?")
+                meta     = f"  Started: {started}  ·  PID: {pid_str}  ·  Elapsed: {elapsed}"
                 status_segs: list = [(CP4 | A_BOLD, " ▶ "), (A_DIM, "running")]
             else:
                 elapsed_s = task.get("elapsed_secs", 0)
@@ -3119,7 +3142,9 @@ class TUI:
                     exit_segs: list = [(CP2 | A_BOLD, f"exit {exit_code}")]
                 else:
                     exit_segs = [(CP6, "ok")]
-                meta = (f"  Finished: {task.get('finished_str', '?')}  ·"
+                wall     = task.get("finished_wall")
+                finished = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(wall)) if wall else task.get("finished_str", "?")
+                meta = (f"  Finished: {finished}  ·"
                         f"  Duration: {elapsed}  ·  ")
                 status_segs = exit_segs
 

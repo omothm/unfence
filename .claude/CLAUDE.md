@@ -292,3 +292,24 @@ See `tui-tests/test-regenerate-summary.sh` for the canonical implementation.
 **Rule:** Always pass `--add-dir str(RULES_DIR)` (or the relevant directory) to every `_spawn_claude_task` call that needs to write files. Omitting it causes writes to be silently blocked with a "Permission denied: sensitive-file guard" error that surfaces as a failure in the TUI without any indication of why.
 
 The current call in `_spawn_claude_task` already includes `--add-dir str(RULES_DIR)`. Any future subprocess that writes to a different directory must add its own `--add-dir` for that path.
+
+## TUI Test Validity — No Circular Assertions
+
+**A test that hardcodes a value in the fixture and then asserts that exact value proves nothing about the code.** This is a circular test: it verifies the test infrastructure, not the implementation.
+
+The correct pattern for verifying a TUI behavior is:
+1. Set up a fixture that puts the system in a state where the code path *will run*.
+2. Trigger the behavior through the TUI (keypress, navigation, etc.).
+3. Assert on output produced by the code — not on values you wrote into the fixture yourself.
+
+**Concrete rule:** If your assertion string appears verbatim in the fixture JSON/file you wrote, the test is circular and must be rewritten. Use a stub binary (e.g. a `claude` script on PATH that exits with known output) to trigger the real code path, then assert on its result.
+
+See `tui-tests/test-task-finished-date.sh` for the canonical implementation of triggering a real background task via stub and asserting the rendered output.
+
+## Persist Raw, Format on Display
+
+**Never pre-format timestamps (or any display-dependent value) before storing them.** Store the raw value (`time.time()` for wall-clock, counts as integers, etc.) and format at render time.
+
+Pre-formatting locks the display format into the stored data. Any format change then requires a schema migration and leaves old persisted entries displaying in the old format — exactly the class of bug that prompted this rule.
+
+**Rule:** In `summary.py`, all timestamps stored in cache files or in-memory structures must be raw Unix floats (`time.time()`). Formatting (e.g. `time.strftime(...)`) belongs exclusively in the render/display path. Provide a backward-compat fallback when reading old entries that predate this convention.
