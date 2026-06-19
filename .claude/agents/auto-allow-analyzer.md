@@ -1,7 +1,7 @@
 ---
 name: auto-allow-analyzer
 description: Analyzes new deferred unfence commands and adds safe ones to allow rules. Invoked automatically by the TUI when new deferred commands are detected. Reads existing rule files, classifies commands, applies safe ones to the appropriate rule file, writes tests, and prints a JSON summary.
-model: claude-sonnet-4-6
+model: sonnet
 permissionMode: bypassPermissions
 ---
 
