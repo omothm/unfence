@@ -134,6 +134,12 @@ run_test "fn call with args, safe body → allow" \
 run_test "multiline fn def+call, safe body → allow" \
   $'helper() {\n  echo hello\n}\nhelper'  "allow"
 
+# Fused { (no space): af(){ curl ...; } — common compact style
+run_test "fn def+call, fused brace af(){ → allow" \
+  $'af(){ echo hello; }\naf'  "allow"
+run_test "fn def+call, fused brace + dangerous body → deny" \
+  $'bad(){ rm -rf /; }\nbad'  "deny"
+
 # --- EVAL_MODE PROJECT_CONFIG loading via EVAL_CWD ---
 # The inline rule in run_test_eval_cwd allows when PROJECT_CONFIG is non-empty.
 # With EVAL_CWD pointing to a dir containing .claude/unfence.json → PROJECT_CONFIG

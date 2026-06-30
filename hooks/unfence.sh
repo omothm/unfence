@@ -124,8 +124,8 @@ _scan_and_register_fns() {
       [[ ${#tokens[@]} -eq 0 ]] && continue
 
       local fname=""
-      # NAME()  — no space before ()
-      if [[ "${tokens[0]}" =~ ^([A-Za-z_][A-Za-z0-9_]*)\(\)$ ]]; then
+      # NAME()  — no space before (), optionally fused with { (e.g. "af(){")
+      if [[ "${tokens[0]}" =~ ^([A-Za-z_][A-Za-z0-9_]*)\(\)\{?$ ]]; then
         fname="${BASH_REMATCH[1]}"
       # NAME () — space before ()
       elif [[ ${#tokens[@]} -ge 2 && "${tokens[1]}" == "()" ]]; then
