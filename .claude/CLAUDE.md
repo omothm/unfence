@@ -78,6 +78,7 @@ This writes the config JSON to a temp `.claude/unfence.json` and passes it as th
 ### Requirements
 
 - **Every change to a rule file MUST be accompanied by corresponding test changes.** Adding a new pattern requires at least one positive and one negative test. Modifying behavior requires updating affected tests.
+- **Every change to `hooks/unfence.sh` itself MUST be accompanied by a corresponding `engine-tests.sh` change.** This applies regardless of whether the change also happens to be exercised indirectly by a `rules/*.test.sh` file — engine behavior (normalization, splitting, `INLINE_VARS`/`_FN_REGISTRY` tracking, verdict combining, `EVAL_MODE`, etc.) must have direct, rule-independent coverage in `engine-tests.sh` so it keeps working even if `rules/` is wiped or a specific rule is later removed/rewritten. If the change can only be observed through a real rule's logic (e.g. a `PROJECT_CONFIG`-driven check), add a minimal self-contained rule fixture instead of depending on a shipped rule — see `run_test_eval_cwd` and `run_test_inline_vars` in `run-tests.sh` for the pattern (temp `UNFENCE_RULES_DIR` with a purpose-built one-off rule, cleaned up after the test).
 - **Always run the full test suite after any change:**
   ```bash
   bash ~/.claude/unfence/run-tests.sh

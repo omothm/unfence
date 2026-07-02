@@ -264,6 +264,51 @@ run_test_eval_cwd() {
 }
 export -f run_test_eval_cwd
 
+# run_test_inline_vars "desc" "cmd" "expected"
+# Runs the engine against a self-contained temp rules dir containing a single
+# rule that fires only for the literal command name "af_test_cmd" and echoes
+# "allow" when $INLINE_VARS resolves BASE to "resolved", "ask" otherwise.
+# Used to verify INLINE_VARS (VAR=literal tracking) is populated before rule
+# bodies are classified — including bodies scanned by _scan_and_register_fns,
+# not just top-level command parts.
+run_test_inline_vars() {
+  local description="$1" command="$2" expected="$3"
+  local seq=$(( ++_SEQ ))
+  (( TOTAL++ ))
+
+  if (( _ACTIVE >= _MAX_PARALLEL )); then
+    wait -n 2>/dev/null
+    (( _ACTIVE-- ))
+  fi
+
+  local result_file="$_TMPDIR/$seq"
+  (
+    local rules_dir output actual
+    rules_dir=$(mktemp -d)
+
+    printf '%s\n' \
+      '#!/usr/bin/env bash' \
+      'if [[ "${TOKENS[0]}" != "af_test_cmd" ]]; then echo defer; exit 0; fi' \
+      'val=$(printf "%s" "$INLINE_VARS" | jq -r ".BASE // empty" 2>/dev/null)' \
+      'if [[ "$val" == "resolved" ]]; then echo allow; else echo ask; fi' \
+      > "$rules_dir/1-test.sh"
+
+    output=$(UNFENCE_RULES_DIR="$rules_dir" EVAL_MODE=1 CMD="$command" bash "$ENGINE" 2>/dev/null)
+    find "$rules_dir" -delete
+
+    actual=$(jq -r '.verdict // empty' <<< "$output" 2>/dev/null)
+    [[ -z "$actual" ]] && actual="defer"
+
+    if [[ "$actual" == "$expected" ]]; then
+      printf 'P\t%s\t%s\n' "$description" "$expected" > "$result_file"
+    else
+      printf 'F\t%s\t%s\t%s\n' "$description" "$expected" "$actual" > "$result_file"
+    fi
+  ) &
+  (( _ACTIVE++ ))
+}
+export -f run_test_inline_vars
+
 echo "═══════════════════════════════════════════════════════════════════"
 echo " unfence test suite — rules"
 echo "═══════════════════════════════════════════════════════════════════"

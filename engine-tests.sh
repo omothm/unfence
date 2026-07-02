@@ -140,6 +140,18 @@ run_test "fn def+call, fused brace af(){ → allow" \
 run_test "fn def+call, fused brace + dangerous body → deny" \
   $'bad(){ rm -rf /; }\nbad'  "deny"
 
+# --- INLINE_VARS must be populated before _scan_and_register_fns classifies
+# function bodies (not just for top-level command parts) ---
+# The inline rule in run_test_inline_vars fires only for "af_test_cmd" and
+# echoes allow when $INLINE_VARS resolves BASE to "resolved", ask otherwise.
+# A VAR=literal assignment preceding a function definition in the same
+# compound command must be visible when the fn-scan evaluates that function's
+# body, mirroring how it's already visible to top-level parts.
+run_test_inline_vars "VAR= before fn def, used in fn body → allow (INLINE_VARS resolved pre-scan)" \
+  $'BASE=resolved\naf() { af_test_cmd; }\naf'  "allow"
+run_test_inline_vars "fn body uses unassigned var → ask (INLINE_VARS unresolved)" \
+  $'af() { af_test_cmd; }\naf'  "ask"
+
 # --- EVAL_MODE PROJECT_CONFIG loading via EVAL_CWD ---
 # The inline rule in run_test_eval_cwd allows when PROJECT_CONFIG is non-empty.
 # With EVAL_CWD pointing to a dir containing .claude/unfence.json → PROJECT_CONFIG
