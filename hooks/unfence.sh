@@ -33,6 +33,7 @@ PROJECT_CONFIG=""
 # Holds simple VAR=literal assignments seen so far, serialized as a JSON object.
 # Rules read this to resolve leading $VAR references in their tokens.
 INLINE_VARS="{}"
+declare -A _ivars=()
 
 # Populated by _scan_and_register_fns for the current invocation.
 # Maps user-defined function names to their body's worst verdict.
@@ -106,6 +107,29 @@ _count_unquoted_braces() {
   echo "$open $close"
 }
 
+# Track a simple VAR=literal assignment from a command part into INLINE_VARS
+# (a JSON object), so later rules can resolve leading $VAR references. Strips
+# export/local/readonly prefix so "export VAR=val" is tracked like "VAR=val".
+# Skips values containing command/process substitution ($(...) or `...`).
+_track_inline_var() {
+  local part="$1"
+  local _iv_part="$part"
+  _iv_part="${_iv_part#export }"; _iv_part="${_iv_part#local }"; _iv_part="${_iv_part#readonly }"
+  if [[ "$_iv_part" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+    local _ivk="${BASH_REMATCH[1]}" _ivv="${BASH_REMATCH[2]}"
+    if [[ "$_ivv" != *'$('* && "$_ivv" != *'`'* ]]; then
+      _ivv="${_ivv#\'}" ; _ivv="${_ivv%\'}" ; _ivv="${_ivv#\"}" ; _ivv="${_ivv%\"}"
+      _ivars["$_ivk"]="$_ivv"
+      local _ivj="{" _ivs=""
+      for _ivk in "${!_ivars[@]}"; do
+        _ivj+="${_ivs}\"${_ivk}\":$(printf '%s' "${_ivars[$_ivk]}" | jq -Rs .)"
+        _ivs=","
+      done
+      INLINE_VARS="${_ivj}}"
+    fi
+  fi
+}
+
 # Scan a raw command for function definitions and populate _FN_REGISTRY.
 # Must be called before the main classification loop.
 # Only registers functions whose body verdict is non-defer (skip-registration policy).
@@ -117,6 +141,11 @@ _scan_and_register_fns() {
   while IFS= read -r -d '' part; do
     part=$(echo "$part" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
     [[ -z "$part" ]] && continue
+
+    # Track VAR=literal assignments before classifying so function bodies
+    # scanned later in this same pass can resolve $VAR references (e.g.
+    # BASE='https://...' followed by af(){ curl ... "$BASE/..." }).
+    [[ "$_fn_state" == "normal" ]] && _track_inline_var "$part"
 
     if [[ "$_fn_state" == "normal" ]]; then
       local tokens=()
@@ -591,6 +620,7 @@ if [[ -n "$EVAL_MODE" ]]; then
     printf '{"verdict":"allow","rule":null}\n'; exit 0
   fi
 
+  _ivars=(); INLINE_VARS="{}"
   _scan_and_register_fns "$RAW_COMMAND"
 
   has_deny=false; has_ask=false; all_allow=true
@@ -598,27 +628,10 @@ if [[ -n "$EVAL_MODE" ]]; then
   defer_parts=()
   _vtmp=$(mktemp)
 
-  declare -A _ivars=()
   while IFS= read -r -d '' part; do
     part=$(echo "$part" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
     [[ -z "$part" ]] && continue
-    # Track simple VAR=literal assignments so rules can expand inline $VAR references.
-    # Strip export/local/readonly prefix so "export VAR=val" is tracked like "VAR=val".
-    _iv_part="$part"
-    _iv_part="${_iv_part#export }"; _iv_part="${_iv_part#local }"; _iv_part="${_iv_part#readonly }"
-    if [[ "$_iv_part" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
-      _ivk="${BASH_REMATCH[1]}" _ivv="${BASH_REMATCH[2]}"
-      if [[ "$_ivv" != *'$('* && "$_ivv" != *'`'* ]]; then
-        _ivv="${_ivv#\'}" ; _ivv="${_ivv%\'}" ; _ivv="${_ivv#\"}" ; _ivv="${_ivv%\"}"
-        _ivars["$_ivk"]="$_ivv"
-        _ivj="{" _ivs=""
-        for _ivk in "${!_ivars[@]}"; do
-          _ivj+="${_ivs}\"${_ivk}\":$(printf '%s' "${_ivars[$_ivk]}" | jq -Rs .)"
-          _ivs=","
-        done
-        INLINE_VARS="${_ivj}}"
-      fi
-    fi
+    _track_inline_var "$part"
     # Redirect (not subshell) so _LAST_RULE propagates back to this shell
     classify_single "$part" > "$_vtmp"
     v=$(cat "$_vtmp")
@@ -680,6 +693,7 @@ fi
 log "CWD $SESSION_CWD"
 log "INPUT $RAW_COMMAND"
 
+_ivars=(); INLINE_VARS="{}"
 _scan_and_register_fns "$RAW_COMMAND"
 
 has_deny=false
@@ -687,27 +701,10 @@ has_ask=false
 all_allow=true
 _DENY_MSG=""
 
-declare -A _ivars=()
 while IFS= read -r -d '' part; do
   part=$(echo "$part" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
   [[ -z "$part" ]] && continue
-  # Track simple VAR=literal assignments so rules can expand inline $VAR references.
-  # Strip export/local/readonly prefix so "export VAR=val" is tracked like "VAR=val".
-  _iv_part="$part"
-  _iv_part="${_iv_part#export }"; _iv_part="${_iv_part#local }"; _iv_part="${_iv_part#readonly }"
-  if [[ "$_iv_part" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
-    _ivk="${BASH_REMATCH[1]}" _ivv="${BASH_REMATCH[2]}"
-    if [[ "$_ivv" != *'$('* && "$_ivv" != *'`'* ]]; then
-      _ivv="${_ivv#\'}" ; _ivv="${_ivv%\'}" ; _ivv="${_ivv#\"}" ; _ivv="${_ivv%\"}"
-      _ivars["$_ivk"]="$_ivv"
-      _ivj="{" _ivs=""
-      for _ivk in "${!_ivars[@]}"; do
-        _ivj+="${_ivs}\"${_ivk}\":$(printf '%s' "${_ivars[$_ivk]}" | jq -Rs .)"
-        _ivs=","
-      done
-      INLINE_VARS="${_ivj}}"
-    fi
-  fi
+  _track_inline_var "$part"
 
   verdict=$(classify_single "$part")
 
