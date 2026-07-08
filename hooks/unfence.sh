@@ -488,6 +488,26 @@ classify_single() {
     [[ ${#TOKENS[@]} -eq 0 ]] && echo "allow" && return  # lone {
   fi
 
+  # Fused function-definition-line normalization: "NAME(){ body..." split on ;
+  # or newline yields "NAME(){ body" as its own part (no closing brace yet).
+  # This is a definition line, not an invocation — _scan_and_register_fns already
+  # evaluated and registered the body's real verdict under _FN_REGISTRY[NAME].
+  # Defer to that stored verdict here so the def-line doesn't independently
+  # fall through to "defer" (dragging the whole compound command down) even
+  # though the actual function body already resolved to a definitive verdict.
+  if [[ "${TOKENS[0]}" =~ ^([A-Za-z_][A-Za-z0-9_]*)\(\)\{ ]]; then
+    local _def_name="${BASH_REMATCH[1]}"
+    local _def_v="${_FN_REGISTRY[$_def_name]:-}"
+    if [[ -n "$_def_v" ]]; then
+      log "  -> $_def_v  (fn-def:$_def_name)"
+      _LAST_RULE="[fn-def:$_def_name]"
+      _LAST_VERDICT="$_def_v"
+      echo "$_def_v"; return
+    fi
+    # Not registered (e.g. body itself deferred) — treat as engine syntax, no verdict.
+    echo "defer"; return
+  fi
+
   # Subshell group normalization: (cmd ...) and (cmd ...) &
   # Shell syntax, not a command — strip the ( ) wrapper and optional trailing &
   # so downstream rules see the real command.  Handles both spaced ( cmd ) and

@@ -140,6 +140,15 @@ run_test "fn def+call, fused brace af(){ → allow" \
 run_test "fn def+call, fused brace + dangerous body → deny" \
   $'bad(){ rm -rf /; }\nbad'  "deny"
 
+# The fused def-line part itself (e.g. "af(){ echo hello" as split on ;) must
+# not independently classify to "defer" once _scan_and_register_fns has
+# resolved the body's real verdict — classify_single must defer to the
+# registered _FN_REGISTRY verdict for that def-line part specifically.
+# Regression coverage for the gap left by 287c687 (which fixed registration
+# but not the top-level classification of the def-line part).
+run_test "fn def+call, fused brace, unregistered (defer body) → defer" \
+  $'unk_fn(){ unknowncmd; }\nunk_fn'  "defer"
+
 # --- INLINE_VARS must be populated before _scan_and_register_fns classifies
 # function bodies (not just for top-level command parts) ---
 # The inline rule in run_test_inline_vars fires only for "af_test_cmd" and
