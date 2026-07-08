@@ -2,6 +2,38 @@
 
 This directory contains the rule files for the unfence engine.
 
+## Repo Layout
+
+- `hooks/unfence.sh` — the PreToolUse hook engine
+- `rules/` — untracked rule files + co-located `*.test.sh` (see [Git Tracking](#git-tracking))
+- `sample-rules/` — tracked example rules, own test suite
+- `summary.py` — the curses TUI
+- `tui-tests/` — tmux-driven TUI smoke tests
+- `run-tests.sh` / `engine-tests.sh` — test runners
+
+## Contents
+
+- [How the Engine Works](#how-the-engine-works)
+- [Rule Files](#rule-files)
+- [Rule File Agnosticism](#rule-file-agnosticism)
+- [Engine Normalization vs `0-*` Rules](#engine-normalization-vs-0--rules)
+- [Transparent Flag Stripping](#transparent-flag-stripping)
+- [PROJECT_CONFIG Schema Conventions](#project_config-schema-conventions)
+- [Rule Count Discipline](#rule-count-discipline)
+- [`logs/unfence.log` Is Live User Data, Not a Scratch File](#logsunfencelog-is-live-user-data-not-a-scratch-file)
+- [Diagnosing Why a Command Isn't Auto-Accepted](#diagnosing-why-a-command-isnt-auto-accepted)
+- [Bash Version Requirement](#bash-version-requirement)
+- [Tests](#tests)
+- [TUI Syntax Check](#tui-syntax-check)
+- [TUI Testing](#tui-testing)
+- [TUI Test Validity — No Circular Assertions](#tui-test-validity--no-circular-assertions)
+- [TUI Safe Rendering Patterns](#tui-safe-rendering-patterns)
+- [Claude Subprocess Patterns](#claude-subprocess-patterns)
+- [Persist Raw, Format on Display](#persist-raw-format-on-display)
+- [Git Tracking](#git-tracking)
+- [Commit and Push Policy](#commit-and-push-policy)
+- [README Sync](#readme-sync)
+
 ## How the Engine Works
 
 The engine (`~/.claude/unfence/hooks/unfence.sh`) is a PreToolUse hook for Claude Code. When Claude Code is about to run a Bash command, the engine:
@@ -26,15 +58,15 @@ Each `*.sh` file (excluding `*.test.sh`) in the `rules/` directory is a rule. Ru
 
 ### `ask` vs `defer` — a critical distinction
 
-These two verdicts both result in the user being prompted, but they are semantically very different:
+Both result in the user being prompted, but for different reasons — don't conflate them:
 
-- **`ask`** means a rule *recognized* the command and made an active decision to require human approval. The rule knows what the command is and deliberately flagged it. The engine emits `{"hookSpecificOutput":{"ruleVerdict":"ask"}}` so the outcome is observable.
-- **`defer`** means no rule *claimed* the command at all — the engine ran out of rules with an opinion. The command falls back to Claude Code's default behavior (which is also to prompt, but for a different reason: *unknown*, not *flagged*).
+- **`ask`**: a rule *recognized* the command and deliberately requires approval. The engine emits `{"hookSpecificOutput":{"ruleVerdict":"ask"}}` — observable and intentional.
+- **`defer`**: no rule *claimed* the command — falls back to Claude Code's default prompt for an *unknown* command, not a flagged one.
 
-Practical consequences:
-- **Deferlog**: commands that `defer` all the way through appear in the TUI's deferred-commands log (so you can review what's unhandled). Commands that `ask` do **not** appear there — they were handled intentionally.
-- **Tests**: `ask` and `defer` must be tested with distinct expected values (`"ask"` vs `"defer"`). Using `"defer"` as the expected value for a rule that returns `ask` hides the distinction and makes it impossible to verify the rule is actually firing.
-- **Rule design**: use `ask` when you have recognized the command and want to require approval. Use `defer` when your rule simply doesn't apply to this command and you want the next rule to have a chance.
+Consequences:
+- **Deferlog**: commands that `defer` all the way through appear in the TUI's deferred-commands log; `ask` commands do not (they were handled intentionally).
+- **Tests**: test `ask` and `defer` with distinct expected values — using `"defer"` to test a rule that returns `ask` hides the distinction and makes it unverifiable.
+- **Rule design**: use `ask` when you recognize the command and want approval; use `defer` when your rule doesn't apply and the next rule should get a chance.
 
 ### Execution Order
 
@@ -50,6 +82,91 @@ Controlled by filename. Current ordering convention:
 3. Default to `echo defer` when the rule doesn't apply.
 4. Keep stderr silent (`2>/dev/null` is applied by the engine, but avoid noisy output).
 5. **`TOKENS` is engine-provided — do not re-tokenize.** The engine pre-populates `TOKENS` (a bash array) by splitting `$COMMAND` with a quote-aware tokenizer before sourcing each rule. Rules read `$COMMAND` for the raw string and `TOKENS` for the pre-split array. Never add `read -ra TOKENS <<< "$COMMAND"` — it re-splits on whitespace without respecting quotes and will corrupt tokens containing spaces inside `$()` or quoted strings.
+
+## Rule File Agnosticism
+
+Nothing in the engine or the TUI should hardcode knowledge about specific rule file names, internal structures, or arrays (e.g. do not assume `1-lists.sh` exists or has an ALLOW array). When adding UI features that create or modify rules, use Claude as the agent (via `--dangerously-skip-permissions`) to read the existing rule files, understand the conventions, and decide where and how to make changes. Never hardcode "append to ALLOW array in `1-lists.sh`" or similar assumptions.
+
+**CLAUDE.md additions must follow the same principle.** This file is a shared reference — additions must be generic (concepts, conventions, invariants) and must never reference specific filenames, array names, or patterns inside `rules/`. Rule files are untracked and evolve independently; any CLAUDE.md note tied to a specific rule file will become stale or misleading.
+
+## Engine Normalization vs `0-*` Rules
+
+When a command part needs to be "unwrapped" before rules can classify it, the fix belongs in one of two places. The deciding question is: **does the construct have a command name?**
+
+**Shell syntax constructs → engine normalization (`classify_single`).**
+Grouping constructs like `{ ... }`, `( ... )`, and `[[ ... ]]` are bash language syntax, not commands. They have no `TOKENS[0]` tool name. The engine is the right place to strip them because the alternative would require every rule to guard against syntax noise it should never see. Examples already handled in the engine: brace groups `{ cmd` / `}`, subshell groups `( cmd ) [&]`, variable assignments `VAR=$(cmd)`.
+
+**Command wrappers and flag stripping → `0-*` preprocessing rules (`recurse:`).**
+When `TOKENS[0]` is a recognizable tool name that wraps another command — `eval`, `bash -c`, `xargs`, `timeout`, `time`, or a tool with transparent context flags like `git -C` — the logic belongs in a `0-*` rule. The engine should not hardcode knowledge of specific tools. Using `recurse:` restarts the full pipeline so every downstream rule sees the clean inner command automatically.
+
+**The wrong call:** if you find yourself writing a `0-*` rule that matches `TOKENS[0] == "("` or `TOKENS[0] == "{"`, that's a signal the fix belongs in the engine instead.
+
+## Transparent Flag Stripping
+
+Flags that modify execution context (e.g. `git -C <path>`) without changing the semantic identity of the command are "transparent". Stripping them is a normalization concern that belongs in a `0-*` preprocessing rule using `recurse:` — **not in the engine**.
+
+Key principles:
+- **Always tool-specific.** Only strip flags you know consume a value token for a particular command. Global stripping across all commands would silently corrupt flags that are meaningful for other tools.
+- **Boolean flags are never transparent in this sense.** Only value-consuming flags qualify. A flag that takes no argument (e.g. `git -p` / `--paginate`) must not be treated as consuming the next token.
+- **Use `recurse:` to restart the full pipeline.** This ensures all downstream rules (lists and checkers) see the clean command automatically.
+- See `0-strip-flags.sh` (in both `rules/` and `sample-rules/`) for the canonical implementation.
+
+## PROJECT_CONFIG Schema Conventions
+
+Rules that need project-specific configuration read `$PROJECT_CONFIG`, which is loaded from `.claude/unfence.json` in the project root. Follow these conventions when defining config keys:
+
+- **Top-level key = tool name** (full name, e.g. `salesforce`, `github` — not the CLI alias).
+- **Nested kebab-case** sub-keys, e.g. `salesforce["safe-orgs"]`, `github["safe-projects"]`.
+- **Name keys after the data they hold**, not the command that uses them. A list of safe org aliases is `safe-orgs`; a list of project entries is `safe-projects`. Never name a key after a subcommand (e.g. not `item-edit`).
+- **One entry, full identity.** Prefer a single array of richly-typed objects over parallel arrays keyed by lookup method. If a project can be identified by both a human-readable number and an opaque node ID, include both in the same object:
+  ```json
+  {
+    "github": {
+      "safe-projects": [
+        {"owner": "trilogy-group", "num": 452, "node-id": "PVT_kwDOAVNSds4AsebT"}
+      ]
+    }
+  }
+  ```
+  The rule then queries the same array differently depending on what the command exposes (`num`+`owner` for `item-add`, `node-id` for `item-edit`).
+
+## Rule Count Discipline
+
+When a user requests a modification or addition of a rule, **first evaluate whether an existing rule is a better fit** for expansion or contraction. Suggest expanding an existing rule if it covers the same domain or command family — keep the total rule count lean. Only create a new rule file if the modification is genuinely distinct in logic or domain. After any change, automatically run `./summary.py` to show the updated state, highlighting what changed.
+
+## `logs/unfence.log` Is Live User Data, Not a Scratch File
+
+`logs/unfence.log` is the engine's real command-history log — the TUI's deferred-commands view reads directly from it. It is **not** a debug scratchpad, even though `log()` calls look like debug tracing.
+
+**Never truncate or overwrite it** (`> logs/unfence.log`, `: > logs/unfence.log`, etc.) for any reason, including "getting a clean trace" while diagnosing a rule or engine bug. Doing so permanently destroys real deferred-command history the user has not yet reviewed.
+
+When you need an isolated trace of engine behavior during diagnosis (verified empirically, not assumed):
+- `EVAL_MODE=1` alone still appends to `logs/unfence.log` — it only skips log *rotation*, not writing. It is not log-safe by itself.
+- Set `NO_LOG=1` (same var `run-tests.sh` exports) to suppress all `log()` writes for the invocation, e.g. `NO_LOG=1 EVAL_MODE=1 CMD="..." bash hooks/unfence.sh`. This is the correct way to get a trace-free run.
+- If you actually need the `log()` trace output (not just the verdict), copy `logs/unfence.log` aside first (`cp logs/unfence.log /tmp/before.log`), run without `NO_LOG`, then `diff` to see only the new lines — never clear the real file to isolate a trace. `LOG_FILE` is hardcoded in `hooks/unfence.sh`, not env-overridable.
+- Never run cleanup (`>`, `rm`, `truncate`) against `logs/unfence.log` without explicit user confirmation.
+
+## Diagnosing Why a Command Isn't Auto-Accepted
+
+**Always read the rule files first** — never assume a command or keyword is unhandled without checking the code; a confident-but-wrong diagnosis (e.g. "no rule handles `for`") wastes time and erodes trust.
+
+Checklist:
+1. Split the command (mentally or via the engine) on `;`, `|`, `&&`, `||`, newlines.
+2. For each part, trace through **every** rule file in filename order, noting the verdict each would produce.
+3. Only conclude a part is unhandled after checking it against all rule files.
+4. **Check rules that sort after the one that fired.** A verdict from rule X doesn't mean X is correct — a later rule Y may be more specific but never ran because X short-circuited the pipeline. That's an ordering bug: reorder Y before X, don't patch X to paper over Y's absence.
+
+**Present the complete trace** — account for every rule, including early deferrals, with a one-line reason each (e.g. "verb check fails"). Omitting a rule forces the user to fill the gap themselves and makes the diagnosis unverifiable.
+
+## Bash Version Requirement
+
+All shell scripts in this project require **bash 4.0 or later**. Features in active use that are unavailable in bash 3.x include `mapfile`, `${var^^}` case modifiers, and `declare -A` associative arrays. Backporting to bash 3.2 would require significant rewrites and is not a goal.
+
+**Shebang convention**: All tracked `.sh` files use `#!/usr/bin/env bash` (not `#!/bin/bash`). On macOS, `/bin/bash` is frozen at 3.2 for licensing reasons; `#!/usr/bin/env bash` uses whichever `bash` is first in `PATH` instead. Install a modern bash via Homebrew (`brew install bash`) if needed.
+
+**Consistency rule**: The PreToolUse hook, the TUI eval (`summary.py`), and the test runner must all resolve to the same `bash` binary. The hook is invoked via its shebang — `#!/usr/bin/env bash` ensures it picks up the same PATH bash that `summary.py` calls directly. Do not use `#!/bin/bash` in any new script.
+
+**Version guard**: `hooks/unfence.sh` and `run-tests.sh` check `BASH_VERSINFO[0] < 4` at startup and exit with an error if the requirement is not met.
 
 ## Tests
 
@@ -88,48 +205,6 @@ This writes the config JSON to a temp `.claude/unfence.json` and passes it as th
   RULES_SUITE=sample-rules bash ~/.claude/unfence/run-tests.sh
   ```
 - **Never proceed with further work if tests are failing.** Fix the issue first. This includes pre-existing failures that were present before your change — all tests must pass before committing.
-
-## Diagnosing Why a Command Isn't Auto-Accepted
-
-**Always read the rule files before diagnosing.** Do not assume a command or keyword is unhandled — check the actual rule files first. A confident diagnosis based on assumption (e.g. "no rule handles `for`") that contradicts the code wastes time and erodes trust.
-
-Diagnostic checklist:
-1. Split the command mentally (or via the engine) on `;`, `|`, `&&`, `||`, newlines.
-2. For each part, trace through **every** rule file in filename order and note which verdict each would produce.
-3. Only conclude a part is unhandled after verifying it against all rule files.
-4. **Check all rules that sort after the one that fired.** A verdict from rule X doesn't mean X is correct — a later rule Y may have given a more specific or more appropriate verdict but never ran because X short-circuited the pipeline. If such a rule exists, the bug is an ordering bug: rename/reorder the later rule to run first. Do not patch rule X to paper over Y's absence.
-
-**Present the complete trace.** When explaining a diagnosis, account for *every* rule — including those that deferred early. Name each and state concisely why it deferred (e.g. "verb check fails"). Omitting a rule forces the user to fill in the gap themselves and makes the diagnosis unverifiable.
-
-## Modifying Rules
-
-## Rule File Agnosticism
-
-Nothing in the engine or the TUI should hardcode knowledge about specific rule file names, internal structures, or arrays (e.g. do not assume `1-lists.sh` exists or has an ALLOW array). When adding UI features that create or modify rules, use Claude as the agent (via `--dangerously-skip-permissions`) to read the existing rule files, understand the conventions, and decide where and how to make changes. Never hardcode "append to ALLOW array in `1-lists.sh`" or similar assumptions.
-
-**CLAUDE.md additions must follow the same principle.** This file is a shared reference — additions must be generic (concepts, conventions, invariants) and must never reference specific filenames, array names, or patterns inside `rules/`. Rule files are untracked and evolve independently; any CLAUDE.md note tied to a specific rule file will become stale or misleading.
-
-## Engine Normalization vs `0-*` Rules
-
-When a command part needs to be "unwrapped" before rules can classify it, the fix belongs in one of two places. The deciding question is: **does the construct have a command name?**
-
-**Shell syntax constructs → engine normalization (`classify_single`).**
-Grouping constructs like `{ ... }`, `( ... )`, and `[[ ... ]]` are bash language syntax, not commands. They have no `TOKENS[0]` tool name. The engine is the right place to strip them because the alternative would require every rule to guard against syntax noise it should never see. Examples already handled in the engine: brace groups `{ cmd` / `}`, subshell groups `( cmd ) [&]`, variable assignments `VAR=$(cmd)`.
-
-**Command wrappers and flag stripping → `0-*` preprocessing rules (`recurse:`).**
-When `TOKENS[0]` is a recognizable tool name that wraps another command — `eval`, `bash -c`, `xargs`, `timeout`, `time`, or a tool with transparent context flags like `git -C` — the logic belongs in a `0-*` rule. The engine should not hardcode knowledge of specific tools. Using `recurse:` restarts the full pipeline so every downstream rule sees the clean inner command automatically.
-
-**The wrong call:** if you find yourself writing a `0-*` rule that matches `TOKENS[0] == "("` or `TOKENS[0] == "{"`, that's a signal the fix belongs in the engine instead.
-
-## Transparent Flag Stripping
-
-Flags that modify execution context (e.g. `git -C <path>`) without changing the semantic identity of the command are "transparent". Stripping them is a normalization concern that belongs in a `0-*` preprocessing rule using `recurse:` — **not in the engine**.
-
-Key principles:
-- **Always tool-specific.** Only strip flags you know consume a value token for a particular command. Global stripping across all commands would silently corrupt flags that are meaningful for other tools.
-- **Boolean flags are never transparent in this sense.** Only value-consuming flags qualify. A flag that takes no argument (e.g. `git -p` / `--paginate`) must not be treated as consuming the next token.
-- **Use `recurse:` to restart the full pipeline.** This ensures all downstream rules (lists and checkers) see the clean command automatically.
-- See `0-strip-flags.sh` (in both `rules/` and `sample-rules/`) for the canonical implementation.
 
 ## TUI Syntax Check
 
@@ -177,44 +252,73 @@ Single-line text inputs must implement horizontal viewport scrolling to keep the
 - `voff = clamp(cursor - avail + 1, 0, max(0, len(text) - avail))` — cursor stays within the visible window.
 - Visible count is the same at cursor-end and cursor-start (stable avail). Moving the cursor changes `voff`, not the number of visible chars.
 
+## TUI Test Validity — No Circular Assertions
+
+**A test that hardcodes a value in the fixture and then asserts that exact value proves nothing about the code.** This is a circular test: it verifies the test infrastructure, not the implementation.
+
+The correct pattern for verifying a TUI behavior is:
+1. Set up a fixture that puts the system in a state where the code path *will run*.
+2. Trigger the behavior through the TUI (keypress, navigation, etc.).
+3. Assert on output produced by the code — not on values you wrote into the fixture yourself.
+
+**Concrete rule:** If your assertion string appears verbatim in the fixture JSON/file you wrote, the test is circular and must be rewritten. Use a stub binary (e.g. a `claude` script on PATH that exits with known output) to trigger the real code path, then assert on its result.
+
+See `tui-tests/test-task-finished-date.sh` for the canonical implementation of triggering a real background task via stub and asserting the rendered output.
+
 ## TUI Safe Rendering Patterns
 
-Font glyph width bugs are **invisible in tmux captures but visible in the user's terminal** (Ghostty). When writing line-drawing or fill code in `summary.py`:
+Font glyph width bugs are **invisible in tmux captures but visible in the user's terminal** (Ghostty) — Python `len()` counts code points while ncurses counts display columns via `wcwidth`, and these diverge for box-drawing chars on some fonts, causing `addstr` to silently clip or fail. ACS functions let ncurses own all column accounting. When writing line-drawing or fill code in `summary.py`:
 
-- **Never** use `addstr("─" * n)` or similar Unicode box-drawing char repetition for fills.
-  Use `stdscr.hline(row, col, curses.ACS_HLINE, n, attr)` instead.
-- **Never** use `addstr("│")` / `addstr("─")` for border characters.
-  Use `addch(curses.ACS_VLINE)` / `addch(curses.ACS_HLINE)`.
-- **Never** track display columns with `col += len(text)` when `text` contains
-  Unicode line-drawing chars (U+2500–U+257F). Use absolute column positions or
-  restrict `len()`-based tracking to pure-ASCII strings.
-- For section headers with a labeled fill, use the `SecLine` layout object —
-  `_draw_item` renders it entirely via `hline(ACS_HLINE)`, which is always correct.
-
-**Rationale:** Python `len()` counts code points; ncurses counts display columns via
-`wcwidth`. These diverge for box-drawing chars on some fonts, causing `addstr` to
-silently clip or fail. ACS functions let ncurses own all column accounting.
+- **Never** use `addstr("─" * n)` or similar Unicode box-drawing char repetition for fills. Use `stdscr.hline(row, col, curses.ACS_HLINE, n, attr)` instead.
+- **Never** use `addstr("│")` / `addstr("─")` for border characters. Use `addch(curses.ACS_VLINE)` / `addch(curses.ACS_HLINE)`.
+- **Never** track display columns with `col += len(text)` when `text` contains Unicode line-drawing chars (U+2500–U+257F). Use absolute column positions or restrict `len()`-based tracking to pure-ASCII strings.
+- For section headers with a labeled fill, use the `SecLine` layout object — `_draw_item` renders it entirely via `hline(ACS_HLINE)`, which is always correct.
 
 **If layout looks correct in `tui-tests.sh` but broken for the user, ask for a Ghostty screenshot.** Automated captures cannot detect font glyph width mismatches — see `tui-tests/helper.sh` for the full list of irreducible limitations.
 
-## PROJECT_CONFIG Schema Conventions
+## Claude Subprocess Patterns
 
-Rules that need project-specific configuration read `$PROJECT_CONFIG`, which is loaded from `.claude/unfence.json` in the project root. Follow these conventions when defining config keys:
+### Logging
 
-- **Top-level key = tool name** (full name, e.g. `salesforce`, `github` — not the CLI alias).
-- **Nested kebab-case** sub-keys, e.g. `salesforce["safe-orgs"]`, `github["safe-projects"]`.
-- **Name keys after the data they hold**, not the command that uses them. A list of safe org aliases is `safe-orgs`; a list of project entries is `safe-projects`. Never name a key after a subcommand (e.g. not `item-edit`).
-- **One entry, full identity.** Prefer a single array of richly-typed objects over parallel arrays keyed by lookup method. If a project can be identified by both a human-readable number and an opaque node ID, include both in the same object:
-  ```json
-  {
-    "github": {
-      "safe-projects": [
-        {"owner": "trilogy-group", "num": 452, "node-id": "PVT_kwDOAVNSds4AsebT"}
-      ]
-    }
-  }
-  ```
-  The rule then queries the same array differently depending on what the command exposes (`num`+`owner` for `item-add`, `node-id` for `item-edit`).
+**Every** Claude subprocess spawned by the TUI — whether via `_spawn_claude_task` or directly via `subprocess.run`/`subprocess.Popen` — must write its full output (prompt, stdout, stderr) to a log file in `CACHE_DIR` (`.claude/cache/`). Use a meaningful name: `summarize-{rule.name}.log`, `shadow-analysis.log`, `modify-{rule.name}.log`, `add-allow-rule.log`, `implement-recommendations.log`, etc. These files persist between TUI runs.
+
+**Rule:** When adding or editing any feature that spawns a Claude subprocess, always ensure the log path is meaningful and discoverable. Never use `stderr=subprocess.DEVNULL` or discard stdout without writing it to a log first. When debugging a failure that a user reports via screenshot, check the corresponding log file first — it contains the full Claude transcript including any error messages or JSON output.
+
+### Invocation — Never Use `--bare`
+
+`summarize_rule` (and any other function that shells out to `claude` for a result) must use the same invocation pattern as `_spawn_claude_task` — **not** `claude --bare`. `--bare` requires interactive `/login` and ignores the env-var auth (`ANTHROPIC_BASE_URL`, `ANTHROPIC_CUSTOM_HEADERS`) that the TUI session uses. Use:
+
+```
+claude --model <model-id> --setting-sources user,project,local --dangerously-skip-permissions --output-format text -p <prompt>
+```
+
+Use `os.environ.get("ANTHROPIC_DEFAULT_HAIKU_MODEL", "claude-haiku-4-5-20251001")` to resolve the model ID rather than the alias `haiku` (which `--bare` understood but the non-bare invocation does not).
+
+### Output Validation
+
+**Validate subprocess output before writing it to a cache file.** When `summarize_rule` receives a non-JSON response (e.g. an auth error string), writing it to the cache file corrupts that file permanently, cascading into two silent failures:
+1. **`load_cache` fails silently**, returning `None`, so the rule shows no description.
+2. **`is_stale` returns `False`** (the corrupt cache is fresh), so pressing `[x]` to regenerate enqueues nothing — `_trigger_stale` sees no stale rules and the UI silently ignores the keypress.
+
+- **Rule:** Before writing any output to a rule's cache file, parse it with `json.loads()`. If parsing fails, log the error and return without writing — keeping the cache absent so `is_stale` returns `True` and the next retry works.
+- **UI rule:** A failed summarization must be surfaced visibly. The detail view must show "Summarization failed." (red/bold) with a log-file hint and "Press [x] to retry." — never silently revert to the generic "no description" prompt. Track failed rules in a `self.failed` set; clear the entry on `[x]` or on successful summarization.
+- **Proof-of-fix standard:** A fix to this class of bug must be verified by a TUI test (in `tui-tests/`) using a stub `claude` binary (on PATH, in the fixture dir) that returns non-JSON instantly (`sleep 0.5` first so the "Summarizing" state is observable under parallel test load). The test must assert: after a failed startup summarization, the detail view shows "Summarization failed." — not "no description"; pressing `[x]` shows "Summarizing, please wait…" (triggered), then "Summarization failed." again after the retry also fails. See `tui-tests/test-regenerate-summary.sh` for the canonical implementation.
+
+### Protected Paths
+
+`_spawn_claude_task` spawns Claude with `--dangerously-skip-permissions` to bypass interactive permission prompts. However, Claude Code's **sensitive-file guard** operates independently and blocks writes to `~/.claude/**` regardless of that flag.
+
+**Rule:** Always pass `--add-dir str(RULES_DIR)` (or the relevant directory) to every `_spawn_claude_task` call that needs to write files. Omitting it causes writes to be silently blocked with a "Permission denied: sensitive-file guard" error that surfaces as a failure in the TUI without any indication of why.
+
+The current call in `_spawn_claude_task` already includes `--add-dir str(RULES_DIR)`. Any future subprocess that writes to a different directory must add its own `--add-dir` for that path.
+
+## Persist Raw, Format on Display
+
+**Never pre-format timestamps (or any display-dependent value) before storing them.** Store the raw value (`time.time()` for wall-clock, counts as integers, etc.) and format at render time.
+
+Pre-formatting locks the display format into the stored data. Any format change then requires a schema migration and leaves old persisted entries displaying in the old format — exactly the class of bug that prompted this rule.
+
+**Rule:** In `summary.py`, all timestamps stored in cache files or in-memory structures must be raw Unix floats (`time.time()`). Formatting (e.g. `time.strftime(...)`) belongs exclusively in the render/display path. Provide a backward-compat fallback when reading old entries that predate this convention.
 
 ## Git Tracking
 
@@ -237,80 +341,3 @@ Steps every time:
 ## README Sync
 
 After any change that affects user-visible behavior (engine logic, TUI features, setup steps, sample-rule patterns), check `README.md` for stale descriptions and update them in the same commit. Keep the README lean — fix outdated information, don't expand it. The README is the only user-facing doc; CLAUDE.md is internal.
-
-## Bash Version Requirement
-
-All shell scripts in this project require **bash 4.0 or later**. Features in active use that are unavailable in bash 3.x include `mapfile`, `${var^^}` case modifiers, and `declare -A` associative arrays. Backporting to bash 3.2 would require significant rewrites and is not a goal.
-
-**Shebang convention**: All tracked `.sh` files use `#!/usr/bin/env bash` (not `#!/bin/bash`). On macOS, `/bin/bash` is frozen at 3.2 for licensing reasons; `#!/usr/bin/env bash` uses whichever `bash` is first in `PATH` instead. Install a modern bash via Homebrew (`brew install bash`) if needed.
-
-**Consistency rule**: The PreToolUse hook, the TUI eval (`summary.py`), and the test runner must all resolve to the same `bash` binary. The hook is invoked via its shebang — `#!/usr/bin/env bash` ensures it picks up the same PATH bash that `summary.py` calls directly. Do not use `#!/bin/bash` in any new script.
-
-**Version guard**: `hooks/unfence.sh` and `run-tests.sh` check `BASH_VERSINFO[0] < 4` at startup and exit with an error if the requirement is not met.
-
-## Rule Count Discipline
-
-When a user requests a modification or addition of a rule, **first evaluate whether an existing rule is a better fit** for expansion or contraction. Suggest expanding an existing rule if it covers the same domain or command family — keep the total rule count lean. Only create a new rule file if the modification is genuinely distinct in logic or domain. After any change, automatically run `./summary.py` to show the updated state, highlighting what changed.
-
-## Claude Subprocess Logging
-
-**Every** Claude subprocess spawned by the TUI — whether via `_spawn_claude_task` or directly via `subprocess.run`/`subprocess.Popen` — must write its full output (prompt, stdout, stderr) to a log file in `CACHE_DIR` (`.claude/cache/`). Use a meaningful name: `summarize-{rule.name}.log`, `shadow-analysis.log`, `modify-{rule.name}.log`, `add-allow-rule.log`, `implement-recommendations.log`, etc. These files persist between TUI runs.
-
-**Rule:** When adding or editing any feature that spawns a Claude subprocess, always ensure the log path is meaningful and discoverable. Never use `stderr=subprocess.DEVNULL` or discard stdout without writing it to a log first. When debugging a failure that a user reports via screenshot, check the corresponding log file first — it contains the full Claude transcript including any error messages or JSON output.
-
-## Claude Subprocess Invocation — Never Use `--bare`
-
-`summarize_rule` (and any other function that shells out to `claude` for a result) must use the same invocation pattern as `_spawn_claude_task` — **not** `claude --bare`. `--bare` requires interactive `/login` and ignores the env-var auth (`ANTHROPIC_BASE_URL`, `ANTHROPIC_CUSTOM_HEADERS`) that the TUI session uses. Use:
-
-```
-claude --model <model-id> --setting-sources user,project,local --dangerously-skip-permissions --output-format text -p <prompt>
-```
-
-Use `os.environ.get("ANTHROPIC_DEFAULT_HAIKU_MODEL", "claude-haiku-4-5-20251001")` to resolve the model ID rather than the alias `haiku` (which `--bare` understood but the non-bare invocation does not).
-
-## Claude Subprocess Output Validation
-
-**Always validate that subprocess output is the expected format before writing it to a cache file.** When `summarize_rule` receives a non-JSON response (e.g. an auth error string), writing it to the cache file corrupts that file permanently. Two cascading failures result:
-
-1. **`load_cache` fails silently**, returning `None`, so the rule shows no description.
-2. **`is_stale` returns `False`** (the corrupt cache is fresh), so pressing `[x]` to regenerate enqueues nothing — `_trigger_stale` sees no stale rules and the UI silently ignores the keypress.
-
-**Rule:** Before writing any output to a rule's cache file, parse it with `json.loads()`. If parsing fails, log the error and return without writing — keeping the cache absent so `is_stale` returns `True` and the next retry works.
-
-**UI rule:** A failed summarization must be surfaced visibly. The detail view must show "Summarization failed." (red/bold) with a log-file hint and "Press [x] to retry." — never silently revert to the generic "no description" prompt. Track failed rules in a `self.failed` set; clear the entry on `[x]` or on successful summarization.
-
-**Proof-of-fix standard:** A fix to this class of bug must be verified by a TUI test (in `tui-tests/`) using a stub `claude` binary (on PATH, in the fixture dir) that returns non-JSON instantly. The test must assert:
-- After a failed startup summarization, the detail view shows "Summarization failed." — not "no description".
-- Pressing `[x]` shows "Summarizing, please wait…" (triggered), then "Summarization failed." again after the retry also fails.
-- The stub must `sleep 0.5` before outputting so the "Summarizing" state is observable under parallel test load.
-
-See `tui-tests/test-regenerate-summary.sh` for the canonical implementation.
-
-## Claude Subprocess and Protected Paths
-
-`_spawn_claude_task` spawns Claude with `--dangerously-skip-permissions` to bypass interactive permission prompts. However, Claude Code's **sensitive-file guard** operates independently and blocks writes to `~/.claude/**` regardless of that flag.
-
-**Rule:** Always pass `--add-dir str(RULES_DIR)` (or the relevant directory) to every `_spawn_claude_task` call that needs to write files. Omitting it causes writes to be silently blocked with a "Permission denied: sensitive-file guard" error that surfaces as a failure in the TUI without any indication of why.
-
-The current call in `_spawn_claude_task` already includes `--add-dir str(RULES_DIR)`. Any future subprocess that writes to a different directory must add its own `--add-dir` for that path.
-
-## TUI Test Validity — No Circular Assertions
-
-**A test that hardcodes a value in the fixture and then asserts that exact value proves nothing about the code.** This is a circular test: it verifies the test infrastructure, not the implementation.
-
-The correct pattern for verifying a TUI behavior is:
-1. Set up a fixture that puts the system in a state where the code path *will run*.
-2. Trigger the behavior through the TUI (keypress, navigation, etc.).
-3. Assert on output produced by the code — not on values you wrote into the fixture yourself.
-
-**Concrete rule:** If your assertion string appears verbatim in the fixture JSON/file you wrote, the test is circular and must be rewritten. Use a stub binary (e.g. a `claude` script on PATH that exits with known output) to trigger the real code path, then assert on its result.
-
-See `tui-tests/test-task-finished-date.sh` for the canonical implementation of triggering a real background task via stub and asserting the rendered output.
-
-## Persist Raw, Format on Display
-
-**Never pre-format timestamps (or any display-dependent value) before storing them.** Store the raw value (`time.time()` for wall-clock, counts as integers, etc.) and format at render time.
-
-Pre-formatting locks the display format into the stored data. Any format change then requires a schema migration and leaves old persisted entries displaying in the old format — exactly the class of bug that prompted this rule.
-
-**Rule:** In `summary.py`, all timestamps stored in cache files or in-memory structures must be raw Unix floats (`time.time()`). Formatting (e.g. `time.strftime(...)`) belongs exclusively in the render/display path. Provide a backward-compat fallback when reading old entries that predate this convention.
